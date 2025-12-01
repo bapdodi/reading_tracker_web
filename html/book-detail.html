@@ -35,7 +35,7 @@
                 <!-- 도서 상세 정보 영역 -->
                 <div id="book-detail-section" class="book-detail-section" style="display: none;">
                     <div class="book-detail-header">
-                        <button class="btn btn-secondary btn-back" onclick="window.history.back()">
+                        <button class="btn btn-secondary btn-back" id="btn-back">
                             ← 돌아가기
                         </button>
                         <!-- 독서 시작하기 버튼 (ToRead 카테고리일 때만 표시) -->
@@ -63,7 +63,10 @@
                             </div>
                             
                             <div class="book-detail-info">
-                                <h1 id="book-title" class="book-title"></h1>
+                                <div class="book-title-wrapper">
+                                    <h1 id="book-title" class="book-title"></h1>
+                                    <div id="book-rating-stars" class="book-rating-stars" style="display: none;"></div>
+                                </div>
                                 
                                 <div class="book-meta">
                                     <div class="book-meta-item">
@@ -120,22 +123,50 @@
                         <div id="user-book-info-section" class="user-book-info-section" style="display: none;">
                             <h2 class="section-title">내 서재 정보</h2>
                             <div class="user-book-info-content">
+                                <!-- 별점 표시 영역 (Finished 카테고리일 때 상단 중앙에 표시) -->
+                                <div id="user-book-rating-stars-container" class="user-book-rating-stars-container" style="display: none;">
+                                    <div id="user-book-rating-stars" class="book-rating-stars"></div>
+                                </div>
                                 <div class="user-book-info-grid">
+                                    <!-- 1. 카테고리 -->
                                     <div class="user-book-info-item" id="user-book-category-item" style="display: none;">
                                         <span class="user-book-info-label">카테고리</span>
                                         <span id="user-book-category" class="user-book-info-value"></span>
                                     </div>
                                     
+                                    <!-- 2. 기대평 -->
                                     <div class="user-book-info-item" id="user-book-expectation-item" style="display: none;">
-                                        <span class="user-book-info-label">기대감</span>
+                                        <span class="user-book-info-label">기대평</span>
                                         <span id="user-book-expectation" class="user-book-info-value"></span>
                                     </div>
                                     
+                                    <!-- 3. 구매/대여 여부 -->
+                                    <div class="user-book-info-item" id="user-book-purchase-type-item" style="display: none;">
+                                        <span class="user-book-info-label">구매/대여 여부</span>
+                                        <div class="user-book-purchase-type-container">
+                                            <select id="user-book-purchase-type-select" class="user-book-purchase-type-select">
+                                                <option value="">선택하세요</option>
+                                                <option value="PURCHASE">구매</option>
+                                                <option value="RENTAL">대여</option>
+                                            </select>
+                                            <button id="btn-save-purchase-type" class="btn-save-purchase-type" style="display: none;" title="저장">저장</button>
+                                            <button id="btn-cancel-purchase-type" class="btn-cancel-purchase-type" style="display: none;" title="취소">취소</button>
+                                        </div>
+                                    </div>
+                                    
+                                    <!-- 4. 독서 시작일 -->
                                     <div class="user-book-info-item" id="user-book-reading-start-date-item" style="display: none;">
                                         <span class="user-book-info-label">독서 시작일</span>
                                         <span id="user-book-reading-start-date" class="user-book-info-value"></span>
                                     </div>
                                     
+                                    <!-- 5. 독서 종료일 -->
+                                    <div class="user-book-info-item" id="user-book-reading-finished-date-item" style="display: none;">
+                                        <span class="user-book-info-label">독서 종료일</span>
+                                        <span id="user-book-reading-finished-date" class="user-book-info-value"></span>
+                                    </div>
+                                    
+                                    <!-- 6. 독서 진행률 -->
                                     <div class="user-book-info-item" id="user-book-reading-progress-item" style="display: none;">
                                         <span class="user-book-info-label">현재 읽은 페이지</span>
                                         <div class="user-book-progress-container">
@@ -182,19 +213,10 @@
                                         </div>
                                     </div>
                                     
-                                    <div class="user-book-info-item" id="user-book-reading-finished-date-item" style="display: none;">
-                                        <span class="user-book-info-label">독서 종료일</span>
-                                        <span id="user-book-reading-finished-date" class="user-book-info-value"></span>
-                                    </div>
-                                    
+                                    <!-- 숨김 처리된 항목들 -->
                                     <div class="user-book-info-item" id="user-book-rating-item" style="display: none;">
                                         <span class="user-book-info-label">평점</span>
                                         <span id="user-book-rating" class="user-book-info-value"></span>
-                                    </div>
-                                    
-                                    <div class="user-book-info-item" id="user-book-purchase-type-item" style="display: none;">
-                                        <span class="user-book-info-label">구매 유형</span>
-                                        <span id="user-book-purchase-type" class="user-book-info-value"></span>
                                     </div>
                                     
                                     <div class="user-book-info-item" id="user-book-added-at-item" style="display: none;">
@@ -225,7 +247,7 @@
                     <div class="error-message">
                         <h2>도서 정보를 불러올 수 없습니다</h2>
                         <p id="error-text"></p>
-                        <button class="btn btn-primary" onclick="window.history.back()">
+                        <button class="btn btn-primary" id="btn-error-back">
                             돌아가기
                         </button>
                     </div>
@@ -267,17 +289,10 @@
                             <option value="PURCHASE">구매</option>
                             <option value="RENTAL">대여</option>
                         </select>
-                            <option value="">선택하세요</option>
-                            <option value="PURCHASED">구매</option>
-                            <option value="BORROWED">대여</option>
-                            <option value="GIFTED">선물</option>
-                            <option value="LIBRARY">도서관</option>
-                        </select>
                     </div>
                 </form>
             </div>
             <div class="modal-footer">
-                <button type="button" class="btn btn-secondary" id="start-reading-modal-cancel-btn">취소</button>
                 <button type="button" class="btn btn-primary" id="start-reading-modal-submit-btn">시작하기</button>
             </div>
         </div>
@@ -313,7 +328,7 @@
                     <div id="category-toread-fields" class="category-fields" style="display: none;">
                         <div class="form-group">
                             <label for="expectation" class="form-label">기대평 (선택사항)</label>
-                            <textarea id="expectation" class="form-textarea" rows="4" maxlength="500" placeholder="이 책에 대한 기대감을 적어주세요"></textarea>
+                            <textarea id="expectation" class="form-textarea" rows="4" maxlength="500" placeholder="이 책에 대한 기대평을 적어주세요"></textarea>
                             <div class="form-hint">최대 500자</div>
                         </div>
                     </div>
@@ -341,6 +356,16 @@
                     
                     <!-- AlmostFinished 카테고리 필드 -->
                     <div id="category-almostfinished-fields" class="category-fields" style="display: none;">
+                        <!-- AlmostFinished 안내 메시지 -->
+                        <div id="almostfinished-info-message" class="info-message" style="display: none;">
+                            <div class="info-message-icon">ℹ️</div>
+                            <div class="info-message-content">
+                                <strong>거의 다 읽음 카테고리 안내</strong>
+                                <p>거의 다 읽음은 독서 진행률 <strong>81~99%</strong>일 때 설정됩니다.</p>
+                                <p>현재 읽은 페이지 수가 전체 페이지의 <strong>81~99%</strong> 범위에 있어야 합니다.</p>
+                            </div>
+                        </div>
+                        
                         <div class="form-group">
                             <label for="reading-start-date-af" class="form-label">독서 시작일 <span class="required">*</span></label>
                             <input type="date" id="reading-start-date-af" class="form-input" required>
@@ -349,6 +374,8 @@
                             <label for="reading-progress-af" class="form-label">현재 읽은 페이지 수 <span class="required">*</span></label>
                             <input type="number" id="reading-progress-af" class="form-input" min="0" required>
                             <div class="form-hint" id="reading-progress-af-hint"></div>
+                            <!-- 실시간 검증 메시지 -->
+                            <div id="reading-progress-af-validation" class="validation-message" style="display: none;"></div>
                         </div>
                     </div>
                     
@@ -362,16 +389,16 @@
                             <label for="reading-finished-date" class="form-label">독서 종료일 <span class="required">*</span></label>
                             <input type="date" id="reading-finished-date" class="form-input" required>
                         </div>
-                        <div class="form-group">
+                        <div class="form-group" id="rating-group" style="display: none;">
                             <label for="rating" class="form-label">평점 <span class="required">*</span></label>
-                            <select id="rating" class="form-select" required>
-                                <option value="">선택하세요</option>
-                                <option value="1">1점</option>
-                                <option value="2">2점</option>
-                                <option value="3">3점</option>
-                                <option value="4">4점</option>
-                                <option value="5">5점</option>
-                            </select>
+                            <div id="rating-stars" class="rating-stars-input" data-rating="0">
+                                <span class="star" data-value="1">☆</span>
+                                <span class="star" data-value="2">☆</span>
+                                <span class="star" data-value="3">☆</span>
+                                <span class="star" data-value="4">☆</span>
+                                <span class="star" data-value="5">☆</span>
+                            </div>
+                            <input type="hidden" id="rating" name="rating">
                         </div>
                         <div class="form-group">
                             <label for="review" class="form-label">후기 (선택사항)</label>
@@ -383,6 +410,47 @@
             <div class="modal-footer">
                 <button type="button" class="btn btn-secondary" id="modal-cancel-btn">취소</button>
                 <button type="button" class="btn btn-primary" id="modal-submit-btn">저장</button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- 완독 처리 모달 (평점/후기 입력) -->
+    <div id="finish-reading-modal" class="modal-overlay" style="display: none;">
+        <div class="modal">
+            <div class="modal-header">
+                <h2 class="modal-title">완독 처리</h2>
+                <button class="modal-close" id="finish-reading-modal-close-btn" aria-label="닫기">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <line x1="18" y1="6" x2="6" y2="18"></line>
+                        <line x1="6" y1="6" x2="18" y2="18"></line>
+                    </svg>
+                </button>
+            </div>
+            <div class="modal-body">
+                <form id="finish-reading-form">
+                    <div class="form-group">
+                        <label for="finish-reading-finished-date" class="form-label">독서 종료일 <span class="required">*</span></label>
+                        <input type="date" id="finish-reading-finished-date" class="form-input" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="finish-reading-rating" class="form-label">평점 <span class="required">*</span></label>
+                        <div id="finish-reading-rating-stars" class="rating-stars-input" data-rating="0">
+                            <span class="star" data-value="1">☆</span>
+                            <span class="star" data-value="2">☆</span>
+                            <span class="star" data-value="3">☆</span>
+                            <span class="star" data-value="4">☆</span>
+                            <span class="star" data-value="5">☆</span>
+                        </div>
+                        <input type="hidden" id="finish-reading-rating" name="finish-reading-rating" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="finish-reading-review" class="form-label">후기 (선택사항)</label>
+                        <textarea id="finish-reading-review" class="form-textarea" rows="6" placeholder="이 책에 대한 후기를 적어주세요"></textarea>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-primary" id="finish-reading-modal-submit-btn">완료</button>
             </div>
         </div>
     </div>

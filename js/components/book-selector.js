@@ -3,7 +3,7 @@
  * 내 서재에서 책을 선택하는 모달 컴포넌트
  */
 
-import bookService from '../services/book-service.js';
+import { bookService } from '../services/book-service.js';
 
 export class BookSelector {
   constructor(containerId) {
@@ -150,8 +150,8 @@ export class BookSelector {
       
       // 도서명 순으로 정렬
       filteredBooks.sort((a, b) => {
-        const titleA = (a.title || '').localeCompare('', 'ko');
-        const titleB = (b.title || '').localeCompare('', 'ko');
+        const titleA = a.title || '';
+        const titleB = b.title || '';
         return titleA.localeCompare(titleB, 'ko');
       });
       
@@ -185,6 +185,14 @@ export class BookSelector {
           <p class="empty-state-hint">서재에 책을 추가해주세요.</p>
         </div>
       `;
+      
+      // 빈 상태일 때 스크롤 제거
+      const modalBody = this.container.querySelector('.modal-body');
+      if (modalBody) {
+        modalBody.classList.remove('scrollable');
+      }
+      bookListContainer.classList.remove('scrollable');
+      
       console.log('[BookSelector] 빈 상태 메시지 표시');
       return;
     }
@@ -213,7 +221,22 @@ export class BookSelector {
     
     html += '</div>';
     bookListContainer.innerHTML = html;
-    console.log(`[BookSelector] 렌더링 완료. HTML 길이: ${html.length}`);
+    
+    // 책 목록이 5개 이상일 때만 스크롤 활성화
+    const modalBody = this.container.querySelector('.modal-body');
+    if (this.books.length >= 5) {
+      if (modalBody) {
+        modalBody.classList.add('scrollable');
+      }
+      bookListContainer.classList.add('scrollable');
+    } else {
+      if (modalBody) {
+        modalBody.classList.remove('scrollable');
+      }
+      bookListContainer.classList.remove('scrollable');
+    }
+    
+    console.log(`[BookSelector] 렌더링 완료. HTML 길이: ${html.length}, 책 수: ${this.books.length}`);
 
     // 이벤트 위임은 init()에서 한 번만 등록되므로 여기서는 HTML만 업데이트
   }
@@ -282,5 +305,4 @@ export class BookSelector {
   }
 }
 
-export default BookSelector;
 

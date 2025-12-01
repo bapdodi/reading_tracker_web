@@ -4,17 +4,17 @@
  * URL 파라미터에서 ISBN 추출 및 도서 상세 정보 로드 및 표시
  */
 
-import bookService from '../../services/book-service.js';
-import authHelper from '../../utils/auth-helper.js';
+import { bookService } from '../../services/book-service.js';
+import { authHelper } from '../../utils/auth-helper.js';
 import { formatDateKorean } from '../../utils/date-formatter.js';
 import { optimizeImageUrl } from '../../utils/image-url-helper.js';
 import { getSafeImageUrl } from '../../utils/image-safety.js';
 import { ROUTES } from '../../constants/routes.js';
 import { BOOK_EVENTS } from '../../constants/events.js';
-import eventBus from '../../utils/event-bus.js';
-import bookState from '../../state/book-state.js';
-import HeaderView from '../common/header.js';
-import FooterView from '../common/footer.js';
+import { eventBus } from '../../utils/event-bus.js';
+import { bookState } from '../../state/book-state.js';
+import { HeaderView } from '../common/header.js';
+import { FooterView } from '../common/footer.js';
 
 class BookDetailView {
   constructor() {
@@ -37,6 +37,13 @@ class BookDetailView {
     this.progressInputChangeHandler = null;
     this.originalProgressValue = null;
     
+    // 이벤트 핸들러 바인딩 (destroy에서 제거하기 위해)
+    this.handleBack = this.handleBack.bind(this);
+    this.handleErrorBack = this.handleErrorBack.bind(this);
+    
+    // AlmostFinished 진행률 검증 핸들러
+    this.almostFinishedProgressHandler = null;
+    
     this.init();
   }
 
@@ -52,6 +59,9 @@ class BookDetailView {
     this.loadingSpinner = document.getElementById('loading-spinner');
     this.bookDetailSection = document.getElementById('book-detail-section');
     this.errorSection = document.getElementById('error-section');
+    
+    // 이벤트 리스너 등록 (모든 경로에서 공통으로 사용)
+    this.setupEventListeners();
     
     // URL 파라미터에서 ISBN 또는 userBookId 추출
     const urlParams = new URLSearchParams(window.location.search);
@@ -100,11 +110,53 @@ class BookDetailView {
   }
   
   /**
+   * 이벤트 리스너 설정 (뒤로가기 버튼 등)
+   */
+  setupEventListeners() {
+    // 뒤로가기 버튼 이벤트 리스너
+    const btnBack = document.getElementById('btn-back');
+    if (btnBack) {
+      btnBack.addEventListener('click', this.handleBack);
+      this.eventListeners.push({ element: btnBack, event: 'click', handler: this.handleBack });
+    }
+    
+    // 에러 섹션 뒤로가기 버튼 이벤트 리스너
+    const btnErrorBack = document.getElementById('btn-error-back');
+    if (btnErrorBack) {
+      btnErrorBack.addEventListener('click', this.handleErrorBack);
+      this.eventListeners.push({ element: btnErrorBack, event: 'click', handler: this.handleErrorBack });
+    }
+    
+    // 서재 추가 버튼 이벤트 리스너
+    const btnAddToShelf = document.getElementById('btn-add-to-shelf');
+    if (btnAddToShelf) {
+      const handleAddToShelfClick = () => {
+        this.handleAddToShelf();
+      };
+      btnAddToShelf.addEventListener('click', handleAddToShelfClick);
+      this.eventListeners.push({ element: btnAddToShelf, event: 'click', handler: handleAddToShelfClick });
+    }
+    
+    // 독서 시작하기 버튼 이벤트 위임 (버튼이 동적으로 표시되므로 이벤트 위임 사용)
+    const bookDetailHeader = document.querySelector('.book-detail-header');
+    if (bookDetailHeader) {
+      const handleHeaderClick = (e) => {
+        if (e.target && e.target.id === 'btn-start-reading') {
+          this.handleStartReading();
+        }
+      };
+      bookDetailHeader.addEventListener('click', handleHeaderClick);
+      this.eventListeners.push({ element: bookDetailHeader, event: 'click', handler: handleHeaderClick });
+    }
+  }
+  
+  /**
    * 모달 이벤트 리스너 설정
    */
   setupModalListeners() {
     this.modal = document.getElementById('add-to-shelf-modal');
     this.startReadingModal = document.getElementById('start-reading-modal');
+    this.finishReadingModal = document.getElementById('finish-reading-modal');
     const categorySelect = document.getElementById('category-select');
     const modalCloseBtn = document.getElementById('modal-close-btn');
     const modalCancelBtn = document.getElementById('modal-cancel-btn');
@@ -112,8 +164,11 @@ class BookDetailView {
     
     // 독서 시작하기 모달 관련 버튼
     const startReadingModalCloseBtn = document.getElementById('start-reading-modal-close-btn');
-    const startReadingModalCancelBtn = document.getElementById('start-reading-modal-cancel-btn');
     const startReadingModalSubmitBtn = document.getElementById('start-reading-modal-submit-btn');
+    
+    // 완독 처리 모달 관련 버튼
+    const finishReadingModalCloseBtn = document.getElementById('finish-reading-modal-close-btn');
+    const finishReadingModalSubmitBtn = document.getElementById('finish-reading-modal-submit-btn');
     
     // 카테고리 변경 이벤트
     if (categorySelect) {
@@ -171,15 +226,6 @@ class BookDetailView {
       this.eventListeners.push({ element: startReadingModalCloseBtn, event: 'click', handler: handleClose });
     }
     
-    // 독서 시작하기 모달 취소 버튼
-    if (startReadingModalCancelBtn) {
-      const handleCancel = () => {
-        this.hideStartReadingModal();
-      };
-      startReadingModalCancelBtn.addEventListener('click', handleCancel);
-      this.eventListeners.push({ element: startReadingModalCancelBtn, event: 'click', handler: handleCancel });
-    }
-    
     // 독서 시작하기 모달 제출 버튼
     if (startReadingModalSubmitBtn) {
       const handleSubmit = () => {
@@ -199,6 +245,8 @@ class BookDetailView {
       this.startReadingModal.addEventListener('click', handleModalClick);
       this.eventListeners.push({ element: this.startReadingModal, event: 'click', handler: handleModalClick });
     }
+    
+    
   }
 
   /**
@@ -229,9 +277,17 @@ class BookDetailView {
         totalPages: rawUserBookDetail.totalPages || null,
       };
       
-      // ISBN을 사용하여 도서 기본 정보 가져오기
+      // ISBN 추출
       this.isbn = this.userBookDetail.isbn;
-      this.bookDetail = await bookService.getBookDetail(this.isbn);
+      
+      // 도서 기본 정보를 병렬로 가져오기 (성능 최적화)
+      // Promise.all을 사용하여 이미 처리된 데이터와 API 호출을 병렬 처리
+      const [, bookDetail] = await Promise.all([
+        Promise.resolve(this.userBookDetail), // 이미 처리된 데이터
+        bookService.getBookDetail(this.isbn)  // 병렬 호출
+      ]);
+      
+      this.bookDetail = bookDetail;
       
       // totalPages가 bookDetail에 있으면 사용
       if (this.bookDetail?.totalPages && !this.userBookDetail.totalPages) {
@@ -454,69 +510,104 @@ class BookDetailView {
       userBookInfoSection.style.display = 'block';
     }
     
-    // 카테고리
-    const categoryItemEl = document.getElementById('user-book-category-item');
-    const categoryEl = document.getElementById('user-book-category');
-    if (userBookDetail.category) {
-      if (categoryItemEl) {
-        categoryItemEl.style.display = 'flex';
-      }
-      if (categoryEl) {
-        const categoryLabels = {
-          'ToRead': '읽을 예정',
-          'Reading': '읽는 중',
-          'AlmostFinished': '거의 다 읽음',
-          'Finished': '완독',
-        };
-        categoryEl.textContent = categoryLabels[userBookDetail.category] || userBookDetail.category;
-      }
-    }
-    
-    // 기대감 - 값이 있으면 항상 표시 (ToRead에서 다른 카테고리로 변경된 경우에도 표시)
-    // 값이 없으면 표시하지 않음 (처음부터 ToRead가 아닌 카테고리로 저장된 경우)
-    const expectationItemEl = document.getElementById('user-book-expectation-item');
-    const expectationEl = document.getElementById('user-book-expectation');
-    if (userBookDetail.expectation) {
-      // 기대감 값이 있으면 항상 표시
-      if (expectationItemEl) {
-        expectationItemEl.style.display = 'flex';
-      }
-      if (expectationEl) {
-        expectationEl.textContent = userBookDetail.expectation;
-      }
-    } else if (userBookDetail.category === 'ToRead') {
-      // ToRead 카테고리이고 값이 없어도 항상 표시 (빈 공간)
-      if (expectationItemEl) {
-        expectationItemEl.style.display = 'flex';
-      }
-      if (expectationEl) {
-        expectationEl.textContent = '';
-      }
-    } else {
-      // ToRead가 아니고 값도 없으면 숨김 (처음부터 다른 카테고리로 저장된 경우)
-      if (expectationItemEl) {
-        expectationItemEl.style.display = 'none';
-      }
-    }
-    
     // 카테고리 정보 (여러 곳에서 사용)
     const category = userBookDetail.category;
     
-    // 독서 시작일 (Reading, AlmostFinished, Finished 카테고리)
-    // Reading, AlmostFinished, Finished 카테고리에서는 필수 필드이므로 값이 있으면 표시
+    // 1. 카테고리 - 항상 표시
+    const categoryItemEl = document.getElementById('user-book-category-item');
+    const categoryEl = document.getElementById('user-book-category');
+    if (categoryItemEl) {
+      categoryItemEl.style.display = 'flex';
+    }
+    if (categoryEl) {
+      const categoryLabels = {
+        'ToRead': '읽을 예정',
+        'Reading': '읽는 중',
+        'AlmostFinished': '거의 다 읽음',
+        'Finished': '완독',
+      };
+      categoryEl.textContent = categoryLabels[category] || category;
+    }
+    
+    // 2. 기대평 - 항상 표시 (값이 없으면 빈 칸)
+    // ToRead 카테고리에서 입력받을 수 있으므로 항상 표시
+    const expectationItemEl = document.getElementById('user-book-expectation-item');
+    const expectationEl = document.getElementById('user-book-expectation');
+    if (expectationItemEl) {
+      expectationItemEl.style.display = 'flex';
+    }
+    if (expectationEl) {
+      expectationEl.textContent = userBookDetail.expectation || '';
+    }
+    
+    // 3. 구매/대여 여부 - 모든 카테고리에서 항상 표시 및 변경 가능 (값이 없으면 빈 칸)
+    const purchaseTypeItemEl = document.getElementById('user-book-purchase-type-item');
+    const purchaseTypeSelect = document.getElementById('user-book-purchase-type-select');
+    const btnSavePurchaseType = document.getElementById('btn-save-purchase-type');
+    const btnCancelPurchaseType = document.getElementById('btn-cancel-purchase-type');
+    if (purchaseTypeItemEl) {
+      purchaseTypeItemEl.style.display = 'flex';
+    }
+    if (purchaseTypeSelect) {
+      // 값 설정 (없으면 빈 값)
+      const currentPurchaseType = userBookDetail.purchaseType || '';
+      purchaseTypeSelect.value = currentPurchaseType;
+      // 모든 카테고리에서 수정 가능하도록 항상 활성화
+      purchaseTypeSelect.disabled = false;
+      // 원본 값 저장 (취소 시 복원용)
+      this.originalPurchaseTypeValue = currentPurchaseType;
+      
+      // select 변경 이벤트 리스너 추가 (저장 버튼 표시)
+      if (!this.purchaseTypeChangeHandler) {
+        this.purchaseTypeChangeHandler = () => {
+          this.handlePurchaseTypeChange();
+        };
+        purchaseTypeSelect.addEventListener('change', this.purchaseTypeChangeHandler);
+        this.eventListeners.push({ element: purchaseTypeSelect, event: 'change', handler: this.purchaseTypeChangeHandler });
+      }
+    }
+    // 저장/취소 버튼 이벤트 리스너 추가
+    if (btnSavePurchaseType && !this.purchaseTypeSaveHandler) {
+      this.purchaseTypeSaveHandler = () => {
+        this.handleSavePurchaseType();
+      };
+      btnSavePurchaseType.addEventListener('click', this.purchaseTypeSaveHandler);
+      this.eventListeners.push({ element: btnSavePurchaseType, event: 'click', handler: this.purchaseTypeSaveHandler });
+    }
+    if (btnCancelPurchaseType && !this.purchaseTypeCancelHandler) {
+      this.purchaseTypeCancelHandler = () => {
+        this.handleCancelPurchaseType();
+      };
+      btnCancelPurchaseType.addEventListener('click', this.purchaseTypeCancelHandler);
+      this.eventListeners.push({ element: btnCancelPurchaseType, event: 'click', handler: this.purchaseTypeCancelHandler });
+    }
+    // 초기 상태: 저장/취소 버튼 숨김
+    if (btnSavePurchaseType) {
+      btnSavePurchaseType.style.display = 'none';
+    }
+    if (btnCancelPurchaseType) {
+      btnCancelPurchaseType.style.display = 'none';
+    }
+    
+    // 4. 독서 시작일 (Reading, AlmostFinished, Finished 카테고리 - 항상 표시, 값이 없으면 빈 칸)
+    // 이 카테고리들에서 입력받은 필수 필드이므로 항상 표시해야 함
     const readingStartDateItemEl = document.getElementById('user-book-reading-start-date-item');
     const readingStartDateEl = document.getElementById('user-book-reading-start-date');
-    const shouldShowReadingStartDate = userBookDetail.readingStartDate && 
-                                      (category === 'Reading' || category === 'AlmostFinished' || category === 'Finished');
+    const shouldShowReadingStartDate = category === 'Reading' || category === 'AlmostFinished' || category === 'Finished';
     if (shouldShowReadingStartDate) {
       if (readingStartDateItemEl) {
         readingStartDateItemEl.style.display = 'flex';
       }
       if (readingStartDateEl) {
-        try {
-          readingStartDateEl.textContent = formatDateKorean(userBookDetail.readingStartDate) || userBookDetail.readingStartDate;
-        } catch (e) {
-          readingStartDateEl.textContent = userBookDetail.readingStartDate;
+        if (userBookDetail.readingStartDate) {
+          try {
+            readingStartDateEl.textContent = formatDateKorean(userBookDetail.readingStartDate) || userBookDetail.readingStartDate;
+          } catch (e) {
+            readingStartDateEl.textContent = userBookDetail.readingStartDate;
+          }
+        } else {
+          // 값이 없으면 빈 칸으로 표시
+          readingStartDateEl.textContent = '';
         }
       }
     } else {
@@ -525,7 +616,8 @@ class BookDetailView {
       }
     }
     
-    // 현재 읽은 페이지 (Reading, AlmostFinished, Finished 카테고리)
+    // 6. 독서 진행률 (Reading, AlmostFinished, Finished 카테고리 - 항상 표시, 값이 없으면 빈 칸)
+    // 이 카테고리들에서 입력받은 필수 필드이므로 항상 표시해야 함
     const readingProgressItemEl = document.getElementById('user-book-reading-progress-item');
     const readingProgressEl = document.getElementById('user-book-reading-progress');
     const readingProgressInput = document.getElementById('user-book-reading-progress-input');
@@ -536,7 +628,8 @@ class BookDetailView {
     const progressBarFill = document.getElementById('reading-progress-bar-fill');
     const progressPercentage = document.getElementById('reading-progress-percentage');
     
-    if (userBookDetail.readingProgress !== null && userBookDetail.readingProgress !== undefined) {
+    const shouldShowReadingProgress = category === 'Reading' || category === 'AlmostFinished' || category === 'Finished';
+    if (shouldShowReadingProgress) {
       if (readingProgressItemEl) {
         readingProgressItemEl.style.display = 'flex';
       }
@@ -544,48 +637,106 @@ class BookDetailView {
       const totalPages = bookDetail.totalPages || userBookDetail.totalPages;
       const currentPages = userBookDetail.readingProgress;
       
-      // 페이지 수 표시
-      this.updateReadingProgressDisplay(currentPages, totalPages, readingProgressEl);
-      
-      // Reading 또는 AlmostFinished 카테고리인 경우 게이지 바 및 편집 기능 표시
-      if ((category === 'Reading' || category === 'AlmostFinished') && totalPages && totalPages > 0) {
-        // 게이지 바 표시 및 업데이트
-        this.updateProgressBar(currentPages, totalPages, progressBarContainer, progressBarFill, progressPercentage);
+      if (currentPages !== null && currentPages !== undefined) {
+        // 페이지 수 표시
+        this.updateReadingProgressDisplay(currentPages, totalPages, readingProgressEl);
         
-        // 편집 버튼 표시 (Reading, AlmostFinished 카테고리에서만)
-        if (btnEditProgress) {
-          btnEditProgress.style.display = 'inline-block';
-          // 편집 버튼 이벤트 리스너 (이벤트 위임 사용, 한 번만 등록)
-          if (!this.progressEditHandler) {
-            this.progressEditHandler = (e) => {
-              if (e.target.id === 'btn-edit-progress') {
-                this.handleEditProgress();
-              } else if (e.target.id === 'btn-save-progress') {
-                this.handleSaveProgress();
-              } else if (e.target.id === 'btn-cancel-progress') {
-                this.handleCancelProgress();
+        // 게이지 바 표시 (Reading, AlmostFinished, Finished 카테고리 모두)
+        // Finished 카테고리에서는 편집 불가능 (읽기 전용)
+        if (totalPages && totalPages > 0) {
+          // 게이지 바 표시 및 업데이트 (모든 카테고리에서 표시)
+          this.updateProgressBar(currentPages, totalPages, progressBarContainer, progressBarFill, progressPercentage);
+          
+          // 편집 버튼 표시 (Reading, AlmostFinished 카테고리에서만)
+          if (category === 'Reading' || category === 'AlmostFinished') {
+            if (btnEditProgress) {
+              btnEditProgress.style.display = 'inline-block';
+              // 편집 버튼 이벤트 리스너 (이벤트 위임 사용, 한 번만 등록)
+              if (!this.progressEditHandler) {
+                this.progressEditHandler = (e) => {
+                  if (e.target.id === 'btn-edit-progress') {
+                    this.handleEditProgress();
+                  } else if (e.target.id === 'btn-save-progress') {
+                    this.handleSaveProgress();
+                  } else if (e.target.id === 'btn-cancel-progress') {
+                    this.handleCancelProgress();
+                  }
+                };
+                readingProgressItemEl.addEventListener('click', this.progressEditHandler);
+                this.eventListeners.push({ element: readingProgressItemEl, event: 'click', handler: this.progressEditHandler });
               }
-            };
-            readingProgressItemEl.addEventListener('click', this.progressEditHandler);
-            this.eventListeners.push({ element: readingProgressItemEl, event: 'click', handler: this.progressEditHandler });
+            }
+            
+            // 입력 필드 변경 이벤트 (실시간 진행률 업데이트, 한 번만 등록)
+            if (readingProgressInput && !this.progressInputChangeHandler) {
+              this.progressInputChangeHandler = () => {
+                this.handleProgressInputChange();
+              };
+              readingProgressInput.addEventListener('input', this.progressInputChangeHandler);
+              this.eventListeners.push({ element: readingProgressInput, event: 'input', handler: this.progressInputChangeHandler });
+            }
+          } else if (category === 'Finished') {
+            // Finished 카테고리에서는 편집 버튼 숨기기
+            if (btnEditProgress) {
+              btnEditProgress.style.display = 'none';
+            }
+            // Finished 카테고리에서는 편집 관련 이벤트 리스너도 제거
+            if (this.progressEditHandler && readingProgressItemEl) {
+              readingProgressItemEl.removeEventListener('click', this.progressEditHandler);
+              // eventListeners에서도 제거
+              this.eventListeners = this.eventListeners.filter(
+                listener => !(listener.element === readingProgressItemEl && listener.event === 'click' && listener.handler === this.progressEditHandler)
+              );
+              this.progressEditHandler = null;
+            }
+            if (this.progressInputChangeHandler && readingProgressInput) {
+              readingProgressInput.removeEventListener('input', this.progressInputChangeHandler);
+              // eventListeners에서도 제거
+              this.eventListeners = this.eventListeners.filter(
+                listener => !(listener.element === readingProgressInput && listener.event === 'input' && listener.handler === this.progressInputChangeHandler)
+              );
+              this.progressInputChangeHandler = null;
+            }
+          }
+        } else {
+          // 전체 페이지 수가 없으면 게이지 바 및 편집 버튼 숨기기
+          if (progressBarContainer) {
+            progressBarContainer.style.display = 'none';
+          }
+          if (btnEditProgress) {
+            btnEditProgress.style.display = 'none';
           }
         }
-        
-        // 입력 필드 변경 이벤트 (실시간 진행률 업데이트, 한 번만 등록)
-        if (readingProgressInput && !this.progressInputChangeHandler) {
-          this.progressInputChangeHandler = () => {
-            this.handleProgressInputChange();
-          };
-          readingProgressInput.addEventListener('input', this.progressInputChangeHandler);
-          this.eventListeners.push({ element: readingProgressInput, event: 'input', handler: this.progressInputChangeHandler });
-        }
       } else {
+        // 값이 없으면 빈 칸으로 표시
+        if (readingProgressEl) {
+          readingProgressEl.textContent = '';
+        }
         // 게이지 바 및 편집 버튼 숨기기
         if (progressBarContainer) {
           progressBarContainer.style.display = 'none';
         }
         if (btnEditProgress) {
           btnEditProgress.style.display = 'none';
+        }
+        // Finished 카테고리에서는 편집 관련 이벤트 리스너도 제거
+        if (category === 'Finished') {
+          if (this.progressEditHandler && readingProgressItemEl) {
+            readingProgressItemEl.removeEventListener('click', this.progressEditHandler);
+            // eventListeners에서도 제거
+            this.eventListeners = this.eventListeners.filter(
+              listener => !(listener.element === readingProgressItemEl && listener.event === 'click' && listener.handler === this.progressEditHandler)
+            );
+            this.progressEditHandler = null;
+          }
+          if (this.progressInputChangeHandler && readingProgressInput) {
+            readingProgressInput.removeEventListener('input', this.progressInputChangeHandler);
+            // eventListeners에서도 제거
+            this.eventListeners = this.eventListeners.filter(
+              listener => !(listener.element === readingProgressInput && listener.event === 'input' && listener.handler === this.progressInputChangeHandler)
+            );
+            this.progressInputChangeHandler = null;
+          }
         }
       }
     } else {
@@ -594,18 +745,24 @@ class BookDetailView {
       }
     }
     
-    // 독서 종료일 (Finished 카테고리)
+    // 5. 독서 종료일 (Finished 카테고리 - 항상 표시, 값이 없으면 빈 칸)
+    // Finished 카테고리에서 입력받은 필수 필드이므로 항상 표시해야 함
     const readingFinishedDateItemEl = document.getElementById('user-book-reading-finished-date-item');
     const readingFinishedDateEl = document.getElementById('user-book-reading-finished-date');
-    if (userBookDetail.readingFinishedDate) {
+    if (category === 'Finished') {
       if (readingFinishedDateItemEl) {
         readingFinishedDateItemEl.style.display = 'flex';
       }
       if (readingFinishedDateEl) {
-        try {
-          readingFinishedDateEl.textContent = formatDateKorean(userBookDetail.readingFinishedDate) || userBookDetail.readingFinishedDate;
-        } catch (e) {
-          readingFinishedDateEl.textContent = userBookDetail.readingFinishedDate;
+        if (userBookDetail.readingFinishedDate) {
+          try {
+            readingFinishedDateEl.textContent = formatDateKorean(userBookDetail.readingFinishedDate) || userBookDetail.readingFinishedDate;
+          } catch (e) {
+            readingFinishedDateEl.textContent = userBookDetail.readingFinishedDate;
+          }
+        } else {
+          // 값이 없으면 빈 칸으로 표시
+          readingFinishedDateEl.textContent = '';
         }
       }
     } else {
@@ -614,42 +771,43 @@ class BookDetailView {
       }
     }
     
-    // 평점 (Finished 카테고리)
-    const ratingItemEl = document.getElementById('user-book-rating-item');
-    const ratingEl = document.getElementById('user-book-rating');
-    if (userBookDetail.rating !== null && userBookDetail.rating !== undefined) {
-      if (ratingItemEl) {
-        ratingItemEl.style.display = 'flex';
-      }
-      if (ratingEl) {
-        ratingEl.textContent = `${userBookDetail.rating}점`;
+    // 평점 (Finished 카테고리 - 내 서재 정보 섹션 상단 중앙에 별점으로 표시)
+    const ratingStarsContainer = document.getElementById('user-book-rating-stars-container');
+    const ratingStarsEl = document.getElementById('user-book-rating-stars');
+    
+    if (category === 'Finished') {
+      if (ratingStarsContainer && ratingStarsEl) {
+        // rating 값이 있으면 별점 표시
+        if (userBookDetail.rating !== null && userBookDetail.rating !== undefined) {
+          const ratingValue = parseInt(userBookDetail.rating, 10);
+          if (!isNaN(ratingValue) && ratingValue >= 1 && ratingValue <= 5) {
+            this.displayRatingStars(ratingStarsEl, ratingValue, false);
+            ratingStarsContainer.style.display = 'flex';
+          } else {
+            ratingStarsContainer.style.display = 'none';
+          }
+        } else {
+          ratingStarsContainer.style.display = 'none';
+        }
       }
     } else {
-      if (ratingItemEl) {
-        ratingItemEl.style.display = 'none';
+      if (ratingStarsContainer) {
+        ratingStarsContainer.style.display = 'none';
       }
     }
     
-    // 구매 유형 (Reading 카테고리 - 선택사항이지만 값이 있으면 표시)
-    const purchaseTypeItemEl = document.getElementById('user-book-purchase-type-item');
-    const purchaseTypeEl = document.getElementById('user-book-purchase-type');
-    // Reading 카테고리이고 구매 유형 값이 있으면 표시
-    if (userBookDetail.purchaseType && category === 'Reading') {
-      if (purchaseTypeItemEl) {
-        purchaseTypeItemEl.style.display = 'flex';
-      }
-      if (purchaseTypeEl) {
-        const purchaseTypeLabels = {
-          'PURCHASE': '구매',
-          'RENTAL': '대여',
-        };
-        purchaseTypeEl.textContent = purchaseTypeLabels[userBookDetail.purchaseType] || userBookDetail.purchaseType;
-      }
-    } else {
-      if (purchaseTypeItemEl) {
-        purchaseTypeItemEl.style.display = 'none';
-      }
+    // 평점 항목 (기존 항목은 숨김 처리)
+    const ratingItemEl = document.getElementById('user-book-rating-item');
+    if (ratingItemEl) {
+      ratingItemEl.style.display = 'none';
     }
+    
+    // 도서명 우측 별점 영역 숨김 (더 이상 사용하지 않음)
+    const bookTitleRatingStars = document.getElementById('book-rating-stars');
+    if (bookTitleRatingStars) {
+      bookTitleRatingStars.style.display = 'none';
+    }
+    
     
     // 서재 추가일 (표시하지 않음)
     const addedAtItemEl = document.getElementById('user-book-added-at-item');
@@ -657,15 +815,21 @@ class BookDetailView {
       addedAtItemEl.style.display = 'none';
     }
     
-    // 후기 (Finished 카테고리)
+    // 7. 후기 (Finished 카테고리 - 항상 표시, 값이 없으면 빈 칸)
+    // Finished 카테고리에서 입력받은 선택 필드이므로 항상 표시해야 함
     const reviewItemEl = document.getElementById('user-book-review-item');
     const reviewEl = document.getElementById('user-book-review');
-    if (userBookDetail.review) {
+    if (category === 'Finished') {
       if (reviewItemEl) {
         reviewItemEl.style.display = 'flex';
       }
       if (reviewEl) {
-        reviewEl.textContent = userBookDetail.review;
+        if (userBookDetail.review) {
+          reviewEl.textContent = userBookDetail.review;
+        } else {
+          // 값이 없으면 빈 칸으로 표시
+          reviewEl.textContent = '';
+        }
       }
     } else {
       if (reviewItemEl) {
@@ -733,8 +897,6 @@ class BookDetailView {
    * 독서 시작하기 처리 (모달 표시)
    */
   handleStartReading() {
-    console.log('독서 시작하기 버튼 클릭됨');
-    
     // 인증 확인
     if (!authHelper.isAuthenticated()) {
       const confirmed = confirm('로그인이 필요합니다. 로그인 페이지로 이동하시겠습니까?');
@@ -749,8 +911,6 @@ class BookDetailView {
       alert('도서 정보를 불러오는 중입니다. 잠시 후 다시 시도해주세요.');
       return;
     }
-    
-    console.log('모달 표시 시도, userBookId:', this.userBookId);
     
     // 모달 표시
     this.showStartReadingModal();
@@ -783,6 +943,10 @@ class BookDetailView {
     
     // 전체 페이지 수 힌트 업데이트
     this.updateProgressHints();
+    
+    // AlmostFinished 관련 메시지 숨김
+    this.hideAlmostFinishedInfoMessage();
+    this.hideAlmostFinishedValidationMessage();
   }
   
   /**
@@ -790,6 +954,10 @@ class BookDetailView {
    */
   hideAddToShelfModal() {
     if (!this.modal) return;
+    
+    // AlmostFinished 관련 메시지 숨김
+    this.hideAlmostFinishedInfoMessage();
+    this.hideAlmostFinishedValidationMessage();
     
     this.modal.classList.remove('show');
     setTimeout(() => {
@@ -833,9 +1001,21 @@ class BookDetailView {
         break;
       case 'AlmostFinished':
         fieldsId = 'category-almostfinished-fields';
+        // AlmostFinished 안내 메시지 표시
+        this.showAlmostFinishedInfoMessage();
+        // 실시간 검증 이벤트 리스너 설정
+        this.setupAlmostFinishedProgressValidation();
         break;
       case 'Finished':
         fieldsId = 'category-finished-fields';
+        // Finished 카테고리 선택 시 별점 입력 초기화
+        const ratingGroup = document.getElementById('rating-group');
+        const ratingStarsInput = document.getElementById('rating-stars');
+        const ratingInput = document.getElementById('rating');
+        if (ratingGroup && ratingStarsInput && ratingInput) {
+          ratingGroup.style.display = 'block';
+          this.initRatingStarsInput(ratingStarsInput, ratingInput);
+        }
         break;
     }
     
@@ -848,6 +1028,117 @@ class BookDetailView {
     
     // 진행률 힌트 업데이트
     this.updateProgressHints();
+    
+    // AlmostFinished가 아닌 경우 안내 메시지 및 검증 메시지 숨김
+    if (category !== 'AlmostFinished') {
+      this.hideAlmostFinishedInfoMessage();
+      this.hideAlmostFinishedValidationMessage();
+    }
+  }
+  
+  /**
+   * AlmostFinished 안내 메시지 표시
+   */
+  showAlmostFinishedInfoMessage() {
+    const infoMessage = document.getElementById('almostfinished-info-message');
+    if (infoMessage) {
+      infoMessage.style.display = 'flex';
+    }
+  }
+  
+  /**
+   * AlmostFinished 안내 메시지 숨김
+   */
+  hideAlmostFinishedInfoMessage() {
+    const infoMessage = document.getElementById('almostfinished-info-message');
+    if (infoMessage) {
+      infoMessage.style.display = 'none';
+    }
+  }
+  
+  /**
+   * AlmostFinished 진행률 실시간 검증 설정
+   */
+  setupAlmostFinishedProgressValidation() {
+    const progressInput = document.getElementById('reading-progress-af');
+    if (!progressInput) return;
+    
+    // 기존 이벤트 리스너 제거 (중복 방지)
+    const existingHandler = this.almostFinishedProgressHandler;
+    if (existingHandler) {
+      progressInput.removeEventListener('input', existingHandler);
+      progressInput.removeEventListener('blur', existingHandler);
+    }
+    
+    // 새로운 이벤트 핸들러 생성
+    this.almostFinishedProgressHandler = () => {
+      this.validateAlmostFinishedProgress();
+    };
+    
+    // 이벤트 리스너 등록
+    progressInput.addEventListener('input', this.almostFinishedProgressHandler);
+    progressInput.addEventListener('blur', this.almostFinishedProgressHandler);
+    
+    // 이벤트 리스너 추적
+    this.eventListeners.push(
+      { element: progressInput, event: 'input', handler: this.almostFinishedProgressHandler },
+      { element: progressInput, event: 'blur', handler: this.almostFinishedProgressHandler }
+    );
+  }
+  
+  /**
+   * AlmostFinished 진행률 실시간 검증
+   */
+  validateAlmostFinishedProgress() {
+    const progressInput = document.getElementById('reading-progress-af');
+    const validationMessage = document.getElementById('reading-progress-af-validation');
+    const totalPages = this.bookDetail?.totalPages;
+    
+    if (!progressInput || !validationMessage || !totalPages) {
+      return;
+    }
+    
+    const inputValue = progressInput.value.trim();
+    if (!inputValue) {
+      this.hideAlmostFinishedValidationMessage();
+      return;
+    }
+    
+    const progress = parseInt(inputValue, 10);
+    if (isNaN(progress) || progress < 0) {
+      this.hideAlmostFinishedValidationMessage();
+      return;
+    }
+    
+    // 진행률 계산
+    const progressPercentage = (progress / totalPages) * 100;
+    const minProgress = Math.ceil(totalPages * 0.81);
+    const maxProgress = Math.floor(totalPages * 0.99);
+    
+    // 81~99% 범위 검증
+    if (progress < minProgress || progress > maxProgress) {
+      validationMessage.style.display = 'block';
+      validationMessage.className = 'validation-message validation-error';
+      if (progress < minProgress) {
+        validationMessage.textContent = `⚠️ 진행률이 81% 미만입니다. (권장: ${minProgress}페이지 이상)`;
+      } else if (progress > maxProgress) {
+        validationMessage.textContent = `⚠️ 진행률이 99%를 초과합니다. (권장: ${maxProgress}페이지 이하)`;
+      }
+    } else {
+      validationMessage.style.display = 'block';
+      validationMessage.className = 'validation-message validation-success';
+      validationMessage.textContent = `✓ 진행률 ${Math.round(progressPercentage)}% (거의 다 읽음 범위: 81~99%)`;
+    }
+  }
+  
+  /**
+   * AlmostFinished 검증 메시지 숨김
+   */
+  hideAlmostFinishedValidationMessage() {
+    const validationMessage = document.getElementById('reading-progress-af-validation');
+    if (validationMessage) {
+      validationMessage.style.display = 'none';
+    }
   }
   
   /**
@@ -887,6 +1178,27 @@ class BookDetailView {
         break;
         
       case 'Reading':
+        if (!formData.readingStartDate) {
+          errors.push('독서 시작일을 입력해주세요.');
+        }
+        if (formData.readingProgress === null || formData.readingProgress === undefined) {
+          errors.push('현재 읽은 페이지 수를 입력해주세요.');
+        } else {
+          // 이미 collectFormData()에서 parseInt 처리되었으므로 숫자 타입 확인
+          const progress = typeof formData.readingProgress === 'number' ? formData.readingProgress : parseInt(formData.readingProgress, 10);
+          if (isNaN(progress) || !isFinite(progress)) {
+            errors.push('읽은 페이지 수는 유효한 숫자여야 합니다.');
+          } else {
+            const totalPages = this.bookDetail?.totalPages;
+            if (progress < 0) {
+              errors.push('페이지 수는 0 이상이어야 합니다.');
+            } else if (totalPages && progress > totalPages) {
+              errors.push(`페이지 수는 전체 페이지 수(${totalPages}페이지)를 초과할 수 없습니다.`);
+            }
+          }
+        }
+        break;
+        
       case 'AlmostFinished':
         if (!formData.readingStartDate) {
           errors.push('독서 시작일을 입력해주세요.');
@@ -904,6 +1216,15 @@ class BookDetailView {
               errors.push('페이지 수는 0 이상이어야 합니다.');
             } else if (totalPages && progress > totalPages) {
               errors.push(`페이지 수는 전체 페이지 수(${totalPages}페이지)를 초과할 수 없습니다.`);
+            } else if (totalPages) {
+              // AlmostFinished 카테고리는 81~99% 범위 검증
+              const progressPercentage = (progress / totalPages) * 100;
+              const minProgress = Math.ceil(totalPages * 0.81);
+              const maxProgress = Math.floor(totalPages * 0.99);
+              
+              if (progress < minProgress || progress > maxProgress) {
+                errors.push(`거의 다 읽음 카테고리는 독서 진행률 81~99%일 때 설정됩니다. (권장: ${minProgress}~${maxProgress}페이지)`);
+              }
             }
           }
         }
@@ -977,7 +1298,7 @@ class BookDetailView {
         formData.readingStartDate = document.getElementById('reading-start-date-f')?.value || null;
         formData.readingFinishedDate = document.getElementById('reading-finished-date')?.value || null;
         const ratingValue = document.getElementById('rating')?.value;
-        formData.rating = (ratingValue && ratingValue.trim() !== '') ? parseInt(ratingValue) : null;
+        formData.rating = (ratingValue && ratingValue.trim() !== '') ? parseInt(ratingValue, 10) : null;
         const reviewValue = document.getElementById('review')?.value?.trim();
         formData.review = (reviewValue && reviewValue !== '') ? reviewValue : null;
         // Finished 카테고리는 readingProgress를 전체 페이지 수로 자동 설정
@@ -1137,6 +1458,27 @@ class BookDetailView {
   }
 
   /**
+   * 뒤로가기 처리
+   * 브라우저 히스토리를 사용하여 바로 이전 화면으로 이동
+   */
+  handleBack(e) {
+    // 이벤트가 전달된 경우 기본 동작 방지
+    if (e) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+    // 브라우저 히스토리를 사용하여 바로 이전 화면으로 이동
+    window.history.back();
+  }
+
+  /**
+   * 에러 섹션 뒤로가기 처리
+   */
+  handleErrorBack() {
+    window.history.back();
+  }
+
+  /**
    * 에러 메시지 표시
    * @param {string} message - 에러 메시지
    */
@@ -1179,42 +1521,126 @@ class BookDetailView {
       return;
     }
     
+    // 모달 표시
+    this.startReadingModal.style.display = 'flex';
+    setTimeout(() => {
+      this.startReadingModal.classList.add('show');
+    }, 10);
+    
+    // 오늘 날짜를 기본값으로 설정
+    const today = new Date().toISOString().split('T')[0];
+    const dateInput = document.getElementById('start-reading-date');
+    if (dateInput) {
+      dateInput.value = today; // 항상 오늘 날짜로 설정
+    }
+    
+    // ToRead에서 변경한 것이므로 마지막으로 읽은 페이지 수는 자동으로 1로 설정
+    // 이후 사용자가 수정할 수 있음
+    const progressInput = document.getElementById('start-reading-progress');
+    if (progressInput) {
+      progressInput.value = '1'; // 기본값 1로 설정
+    }
+    
+    // 구매/대여 여부는 빈 값으로 설정 (선택사항)
+    const purchaseTypeSelect = document.getElementById('start-reading-purchase-type');
+    if (purchaseTypeSelect) {
+      purchaseTypeSelect.value = '';
+    }
+    
+    // 진행률 힌트 업데이트
+    this.updateStartReadingProgressHint();
+    
+    // 진행률 입력 필드에 이벤트 리스너 추가 (전체 페이지 수 확인용)
+    // 기존 리스너 제거 후 새로 추가 (중복 방지)
+    if (progressInput) {
+      // 기존 리스너가 있다면 제거 (progressInput에 저장된 핸들러 참조 사용)
+      if (this.progressInputHandler) {
+        progressInput.removeEventListener('input', this.progressInputHandler);
+        // eventListeners 배열에서도 제거
+        this.eventListeners = this.eventListeners.filter(
+          listener => !(listener.element === progressInput && listener.event === 'input')
+        );
+      }
+      
+      const handleProgressChange = () => {
+        this.updateStartReadingProgressHint();
+      };
+      this.progressInputHandler = handleProgressChange; // 참조 저장
+      progressInput.addEventListener('input', handleProgressChange);
+      // eventListeners 배열에 추가하여 destroy()에서 정리 가능하도록
+      this.eventListeners.push({ element: progressInput, event: 'input', handler: handleProgressChange });
+    }
+    
+    // 모달 버튼 이벤트 리스너 재확인 (모달이 표시될 때마다)
+    this.setupStartReadingModalListeners();
+  }
+  
+  /**
+   * 독서 시작하기 모달 이벤트 리스너 설정
+   */
+  setupStartReadingModalListeners() {
+    const startReadingModalCloseBtn = document.getElementById('start-reading-modal-close-btn');
+    const startReadingModalSubmitBtn = document.getElementById('start-reading-modal-submit-btn');
+    
+    // 기존 리스너 제거 (중복 방지)
+    if (startReadingModalCloseBtn) {
+      // 기존 핸들러 찾아서 제거
+      const existingCloseHandler = startReadingModalCloseBtn._closeHandler;
+      if (existingCloseHandler) {
+        startReadingModalCloseBtn.removeEventListener('click', existingCloseHandler);
+      }
+      
+      const handleClose = () => {
+        this.hideStartReadingModal();
+      };
+      startReadingModalCloseBtn._closeHandler = handleClose;
+      startReadingModalCloseBtn.addEventListener('click', handleClose);
+      
+      // eventListeners 배열 업데이트
+      this.eventListeners = this.eventListeners.filter(
+        listener => !(listener.element === startReadingModalCloseBtn && listener.event === 'click')
+      );
+      this.eventListeners.push({ element: startReadingModalCloseBtn, event: 'click', handler: handleClose });
+    }
+    
+    // 제출 버튼
+    if (startReadingModalSubmitBtn) {
+      const existingSubmitHandler = startReadingModalSubmitBtn._submitHandler;
+      if (existingSubmitHandler) {
+        startReadingModalSubmitBtn.removeEventListener('click', existingSubmitHandler);
+      }
+      
+      const handleSubmit = () => {
+        this.submitStartReadingForm();
+      };
+      startReadingModalSubmitBtn._submitHandler = handleSubmit;
+      startReadingModalSubmitBtn.addEventListener('click', handleSubmit);
+      
+      this.eventListeners = this.eventListeners.filter(
+        listener => !(listener.element === startReadingModalSubmitBtn && listener.event === 'click')
+      );
+      this.eventListeners.push({ element: startReadingModalSubmitBtn, event: 'click', handler: handleSubmit });
+    }
+    
+    // 모달 외부 클릭 시 닫기
     if (this.startReadingModal) {
-      this.startReadingModal.style.display = 'flex';
-      
-      // 오늘 날짜를 기본값으로 설정
-      const today = new Date().toISOString().split('T')[0];
-      const dateInput = document.getElementById('start-reading-date');
-      if (dateInput) {
-        dateInput.value = today; // 항상 오늘 날짜로 설정
+      const existingModalClickHandler = this.startReadingModal._modalClickHandler;
+      if (existingModalClickHandler) {
+        this.startReadingModal.removeEventListener('click', existingModalClickHandler);
       }
       
-      // ToRead에서 변경한 것이므로 마지막으로 읽은 페이지 수는 자동으로 1로 설정
-      // 이후 사용자가 수정할 수 있음
-      const progressInput = document.getElementById('start-reading-progress');
-      if (progressInput) {
-        progressInput.value = '1'; // 기본값 1로 설정
-      }
-      
-      // 진행률 힌트 업데이트
-      this.updateStartReadingProgressHint();
-      
-      // 진행률 입력 필드에 이벤트 리스너 추가 (전체 페이지 수 확인용)
-      // 기존 리스너 제거 후 새로 추가 (중복 방지)
-      if (progressInput) {
-        // 기존 리스너가 있다면 제거 (progressInput에 저장된 핸들러 참조 사용)
-        if (this.progressInputHandler) {
-          progressInput.removeEventListener('input', this.progressInputHandler);
+      const handleModalClick = (e) => {
+        if (e.target === this.startReadingModal) {
+          this.hideStartReadingModal();
         }
-        
-        const handleProgressChange = () => {
-          this.updateStartReadingProgressHint();
-        };
-        this.progressInputHandler = handleProgressChange; // 참조 저장
-        progressInput.addEventListener('input', handleProgressChange);
-        // eventListeners 배열에 추가하여 destroy()에서 정리 가능하도록
-        this.eventListeners.push({ element: progressInput, event: 'input', handler: handleProgressChange });
-      }
+      };
+      this.startReadingModal._modalClickHandler = handleModalClick;
+      this.startReadingModal.addEventListener('click', handleModalClick);
+      
+      this.eventListeners = this.eventListeners.filter(
+        listener => !(listener.element === this.startReadingModal && listener.event === 'click')
+      );
+      this.eventListeners.push({ element: this.startReadingModal, event: 'click', handler: handleModalClick });
     }
   }
 
@@ -1223,7 +1649,10 @@ class BookDetailView {
    */
   hideStartReadingModal() {
     if (this.startReadingModal) {
-      this.startReadingModal.style.display = 'none';
+      this.startReadingModal.classList.remove('show');
+      setTimeout(() => {
+        this.startReadingModal.style.display = 'none';
+      }, 200);
     }
     
     // 폼 초기화
@@ -1440,7 +1869,14 @@ class BookDetailView {
     
     // 유효한 숫자인 경우에만 진행률 업데이트
     if (!isNaN(inputValue) && isFinite(inputValue) && totalPages && totalPages > 0) {
+      // 현재 읽은 페이지 수는 전체 페이지 수를 초과할 수 없음
       const validValue = Math.max(0, Math.min(inputValue, totalPages));
+      
+      // 입력값이 전체 페이지 수를 초과하는 경우 입력값을 제한
+      if (inputValue > totalPages) {
+        readingProgressInput.value = totalPages;
+      }
+      
       this.updateProgressBar(validValue, totalPages, progressBarContainer, progressBarFill, progressPercentage);
     }
   }
@@ -1468,9 +1904,12 @@ class BookDetailView {
     
     // 전체 페이지 수 확인
     const totalPages = this.bookDetail?.totalPages || this.userBookDetail.totalPages;
-    if (totalPages && totalPages > 0 && progressNum > totalPages) {
-      alert(`읽은 페이지 수는 전체 페이지 수(${totalPages}페이지)를 초과할 수 없습니다.`);
-      return;
+    if (totalPages && totalPages > 0) {
+      // 현재 읽은 페이지 수는 전체 페이지 수를 초과할 수 없음
+      if (progressNum > totalPages) {
+        alert(`읽은 페이지 수는 전체 페이지 수(${totalPages}페이지)를 초과할 수 없습니다.`);
+        return;
+      }
     }
     
     // 저장 버튼 비활성화
@@ -1482,6 +1921,31 @@ class BookDetailView {
     try {
       // 이전 카테고리 저장 (변경 여부 확인용)
       const previousCategory = this.userBookDetail.category;
+      
+      // Finished로 변경될 가능성이 있는지 확인 (진행률이 전체 페이지 수와 정확히 같은 경우만)
+      const totalPages = this.bookDetail?.totalPages || this.userBookDetail.totalPages;
+      const willBecomeFinished = totalPages && totalPages > 0 && progressNum === totalPages;
+      
+      // 다른 카테고리에서 Finished로 변경될 경우 확인 알림 표시
+      // (단, 이미 Finished 카테고리이거나 "내 서재에 저장하기"에서 Finished를 선택한 경우는 제외)
+      if (willBecomeFinished && previousCategory !== 'Finished' && 
+          (previousCategory === 'ToRead' || previousCategory === 'Reading' || previousCategory === 'AlmostFinished')) {
+        const confirmed = confirm(
+          `읽은 페이지 수가 전체 페이지 수(${totalPages}페이지)와 같습니다.\n` +
+          `이 책을 완독(Finished) 카테고리로 변경하시겠습니까?\n\n` +
+          `완독으로 변경하면 더 이상 읽은 페이지 수를 수정할 수 없습니다.`
+        );
+        
+        if (!confirmed) {
+          // 사용자가 '아니오'를 선택한 경우 변경 취소
+          if (btnSaveProgress) {
+            btnSaveProgress.disabled = false;
+            btnSaveProgress.textContent = '저장';
+          }
+          // 편집 모드 유지 (취소하지 않음, 사용자가 다시 수정할 수 있도록)
+          return;
+        }
+      }
       
       // API 호출하여 읽은 페이지 수 업데이트
       // 백엔드에서 진행률에 따라 카테고리를 자동으로 변경함
@@ -1513,7 +1977,7 @@ class BookDetailView {
       // 편집 모드 종료
       this.exitEditProgressMode();
       
-      // 카테고리 변경 알림
+      // 카테고리 변경 알림 및 처리
       const newCategory = mappedUserBookDetail.category;
       if (previousCategory !== newCategory) {
         const categoryLabels = {
@@ -1524,7 +1988,14 @@ class BookDetailView {
         };
         const previousLabel = categoryLabels[previousCategory] || previousCategory;
         const newLabel = categoryLabels[newCategory] || newCategory;
-        alert(`읽은 페이지 수가 업데이트되었습니다.\n카테고리가 "${previousLabel}"에서 "${newLabel}"로 변경되었습니다.`);
+        
+        // Finished 카테고리로 변경된 경우 평점/후기 입력 모달 표시
+        if (newCategory === 'Finished' && previousCategory !== 'Finished') {
+          // 모달 표시 (평점은 필수, 후기는 선택)
+          this.showFinishReadingModal();
+        } else {
+          alert(`읽은 페이지 수가 업데이트되었습니다.\n카테고리가 "${previousLabel}"에서 "${newLabel}"로 변경되었습니다.`);
+        }
       } else {
         alert('읽은 페이지 수가 업데이트되었습니다.');
       }
@@ -1562,6 +2033,295 @@ class BookDetailView {
   }
 
   /**
+   * 구매/대여 여부 변경 처리 (저장 버튼 표시)
+   */
+  handlePurchaseTypeChange() {
+    const btnSavePurchaseType = document.getElementById('btn-save-purchase-type');
+    const btnCancelPurchaseType = document.getElementById('btn-cancel-purchase-type');
+    
+    // 저장/취소 버튼 표시
+    if (btnSavePurchaseType) {
+      btnSavePurchaseType.style.display = 'inline-block';
+    }
+    if (btnCancelPurchaseType) {
+      btnCancelPurchaseType.style.display = 'inline-block';
+    }
+  }
+
+  /**
+   * 구매/대여 여부 저장
+   */
+  async handleSavePurchaseType() {
+    const purchaseTypeSelect = document.getElementById('user-book-purchase-type-select');
+    const btnSavePurchaseType = document.getElementById('btn-save-purchase-type');
+    
+    if (!purchaseTypeSelect || !this.userBookId) return;
+    
+    const purchaseType = purchaseTypeSelect.value || null;
+    
+    // 저장 버튼 비활성화
+    if (btnSavePurchaseType) {
+      btnSavePurchaseType.disabled = true;
+      btnSavePurchaseType.textContent = '저장 중...';
+    }
+    
+    try {
+      // API 호출하여 구매/대여 여부 업데이트
+      await bookService.updateBookDetail(this.userBookId, {
+        purchaseType: purchaseType,
+      });
+      
+      // 성공 메시지
+      alert('구매/대여 여부가 업데이트되었습니다.');
+      
+      // 도서 상세 정보 다시 로드
+      await this.loadUserBookDetail();
+      
+    } catch (error) {
+      console.error('구매/대여 여부 업데이트 오류:', error);
+      alert('구매/대여 여부 업데이트 중 오류가 발생했습니다: ' + (error.message || '알 수 없는 오류'));
+      
+      // 원래 값으로 복원
+      purchaseTypeSelect.value = this.originalPurchaseTypeValue || '';
+    } finally {
+      // 저장 버튼 활성화 및 숨김
+      if (btnSavePurchaseType) {
+        btnSavePurchaseType.disabled = false;
+        btnSavePurchaseType.textContent = '저장';
+        btnSavePurchaseType.style.display = 'none';
+      }
+      const btnCancelPurchaseType = document.getElementById('btn-cancel-purchase-type');
+      if (btnCancelPurchaseType) {
+        btnCancelPurchaseType.style.display = 'none';
+      }
+    }
+  }
+
+  /**
+   * 구매/대여 여부 변경 취소
+   */
+  handleCancelPurchaseType() {
+    const purchaseTypeSelect = document.getElementById('user-book-purchase-type-select');
+    const btnSavePurchaseType = document.getElementById('btn-save-purchase-type');
+    const btnCancelPurchaseType = document.getElementById('btn-cancel-purchase-type');
+    
+    // 원래 값으로 복원
+    if (purchaseTypeSelect) {
+      purchaseTypeSelect.value = this.originalPurchaseTypeValue || '';
+    }
+    
+    // 저장/취소 버튼 숨김
+    if (btnSavePurchaseType) {
+      btnSavePurchaseType.style.display = 'none';
+    }
+    if (btnCancelPurchaseType) {
+      btnCancelPurchaseType.style.display = 'none';
+    }
+  }
+
+  /**
+   * 완독 처리 모달 표시 및 초기화
+   */
+  showFinishReadingModal() {
+    if (!this.finishReadingModal) {
+      this.finishReadingModal = document.getElementById('finish-reading-modal');
+    }
+    
+    if (!this.finishReadingModal) {
+      console.error('완독 처리 모달을 찾을 수 없습니다.');
+      return;
+    }
+    
+    // 모달 표시
+    this.finishReadingModal.style.display = 'flex';
+    setTimeout(() => {
+      this.finishReadingModal.classList.add('show');
+    }, 10);
+    
+    // 폼 초기화
+    const form = document.getElementById('finish-reading-form');
+    if (form) {
+      form.reset();
+    }
+    
+    // 독서 종료일을 오늘 날짜로 기본 설정
+    const finishedDateInput = document.getElementById('finish-reading-finished-date');
+    if (finishedDateInput) {
+      const today = new Date();
+      const year = today.getFullYear();
+      const month = String(today.getMonth() + 1).padStart(2, '0');
+      const day = String(today.getDate()).padStart(2, '0');
+      finishedDateInput.value = `${year}-${month}-${day}`;
+    }
+    
+    // 별점 입력 초기화
+    const ratingStarsInput = document.getElementById('finish-reading-rating-stars');
+    const ratingInput = document.getElementById('finish-reading-rating');
+    if (ratingStarsInput) {
+      this.initRatingStarsInput(ratingStarsInput, ratingInput);
+    }
+    
+    // 이벤트 리스너 설정
+    this.setupFinishReadingModalListeners();
+  }
+  
+  /**
+   * 완독 처리 모달 이벤트 리스너 설정
+   */
+  setupFinishReadingModalListeners() {
+    const finishReadingModalCloseBtn = document.getElementById('finish-reading-modal-close-btn');
+    const finishReadingModalSubmitBtn = document.getElementById('finish-reading-modal-submit-btn');
+    
+    // 기존 리스너 제거 (중복 방지)
+    if (finishReadingModalCloseBtn) {
+      // 기존 핸들러 찾아서 제거
+      const existingCloseHandler = finishReadingModalCloseBtn._closeHandler;
+      if (existingCloseHandler) {
+        finishReadingModalCloseBtn.removeEventListener('click', existingCloseHandler);
+      }
+      
+      const handleClose = () => {
+        this.hideFinishReadingModal();
+      };
+      finishReadingModalCloseBtn._closeHandler = handleClose;
+      finishReadingModalCloseBtn.addEventListener('click', handleClose);
+      
+      // eventListeners 배열 업데이트
+      this.eventListeners = this.eventListeners.filter(
+        listener => !(listener.element === finishReadingModalCloseBtn && listener.event === 'click')
+      );
+      this.eventListeners.push({ element: finishReadingModalCloseBtn, event: 'click', handler: handleClose });
+    }
+    
+    // 제출 버튼
+    if (finishReadingModalSubmitBtn) {
+      const existingSubmitHandler = finishReadingModalSubmitBtn._submitHandler;
+      if (existingSubmitHandler) {
+        finishReadingModalSubmitBtn.removeEventListener('click', existingSubmitHandler);
+      }
+      
+      const handleSubmit = () => {
+        this.submitFinishReadingForm();
+      };
+      finishReadingModalSubmitBtn._submitHandler = handleSubmit;
+      finishReadingModalSubmitBtn.addEventListener('click', handleSubmit);
+      
+      this.eventListeners = this.eventListeners.filter(
+        listener => !(listener.element === finishReadingModalSubmitBtn && listener.event === 'click')
+      );
+      this.eventListeners.push({ element: finishReadingModalSubmitBtn, event: 'click', handler: handleSubmit });
+    }
+    
+    // 모달 외부 클릭 시 닫기
+    if (this.finishReadingModal) {
+      const existingModalClickHandler = this.finishReadingModal._modalClickHandler;
+      if (existingModalClickHandler) {
+        this.finishReadingModal.removeEventListener('click', existingModalClickHandler);
+      }
+      
+      const handleModalClick = (e) => {
+        if (e.target === this.finishReadingModal) {
+          this.hideFinishReadingModal();
+        }
+      };
+      this.finishReadingModal._modalClickHandler = handleModalClick;
+      this.finishReadingModal.addEventListener('click', handleModalClick);
+      
+      this.eventListeners = this.eventListeners.filter(
+        listener => !(listener.element === this.finishReadingModal && listener.event === 'click')
+      );
+      this.eventListeners.push({ element: this.finishReadingModal, event: 'click', handler: handleModalClick });
+    }
+  }
+
+  /**
+   * 완독 처리 모달 닫기
+   */
+  hideFinishReadingModal() {
+    if (this.finishReadingModal) {
+      this.finishReadingModal.classList.remove('show');
+      setTimeout(() => {
+        this.finishReadingModal.style.display = 'none';
+      }, 200);
+    }
+    
+    // 폼 초기화
+    const form = document.getElementById('finish-reading-form');
+    if (form) {
+      form.reset();
+    }
+  }
+
+  /**
+   * 완독 처리 폼 제출
+   */
+  async submitFinishReadingForm() {
+    const finishedDateInput = document.getElementById('finish-reading-finished-date');
+    const finishedDate = finishedDateInput?.value;
+    const ratingInput = document.getElementById('finish-reading-rating');
+    const rating = ratingInput?.value;
+    const review = document.getElementById('finish-reading-review')?.value;
+    
+    // 필수 필드 검증
+    if (!finishedDate || finishedDate.trim() === '') {
+      alert('독서 종료일을 입력해주세요.');
+      return;
+    }
+    
+    if (!rating || rating.trim() === '') {
+      alert('평점을 선택해주세요.');
+      return;
+    }
+    
+    const ratingNum = parseInt(rating, 10);
+    if (isNaN(ratingNum) || ratingNum < 1 || ratingNum > 5) {
+      alert('평점은 1점부터 5점까지 선택할 수 있습니다.');
+      return;
+    }
+    
+    // 제출 버튼 비활성화
+    const submitBtn = document.getElementById('finish-reading-modal-submit-btn');
+    if (submitBtn) {
+      submitBtn.disabled = true;
+      submitBtn.textContent = '처리 중...';
+    }
+    
+    try {
+      // API 요청 데이터 구성
+      const requestData = {
+        category: 'Finished',
+        readingFinishedDate: finishedDate.trim(),
+        rating: ratingNum,
+      };
+      
+      // 후기가 입력된 경우에만 추가
+      if (review && review.trim() !== '') {
+        requestData.review = review.trim();
+      }
+      
+      // 완독 처리 API 호출 (카테고리, 독서 종료일, 평점 및 후기 업데이트)
+      await bookService.updateBookDetail(this.userBookId, requestData);
+      
+      // 성공 메시지
+      alert('완독 처리가 완료되었습니다.');
+      
+      // 모달 닫기
+      this.hideFinishReadingModal();
+      
+      // 도서 상세 정보 다시 로드
+      await this.loadUserBookDetail();
+      
+    } catch (error) {
+      console.error('완독 처리 오류:', error);
+      alert('완독 처리 중 오류가 발생했습니다: ' + (error.message || '알 수 없는 오류'));
+      if (submitBtn) {
+        submitBtn.disabled = false;
+        submitBtn.textContent = '완료';
+      }
+    }
+  }
+
+  /**
    * 읽은 페이지 수 편집 모드 종료
    */
   exitEditProgressMode() {
@@ -1590,6 +2350,138 @@ class BookDetailView {
   }
 
   /**
+   * 별점 표시 (읽기 전용)
+   * @param {HTMLElement} container - 별점을 표시할 컨테이너 요소
+   * @param {number} rating - 평점 (1-5)
+   * @param {boolean} interactive - 클릭 가능 여부 (기본값: false)
+   */
+  displayRatingStars(container, rating, interactive = false) {
+    if (!container) return;
+    
+    const ratingNum = parseInt(rating, 10);
+    if (isNaN(ratingNum) || ratingNum < 1 || ratingNum > 5) {
+      container.innerHTML = '';
+      return;
+    }
+    
+    let html = '';
+    for (let i = 1; i <= 5; i++) {
+      const isFilled = i <= ratingNum;
+      html += `<span class="star" data-value="${i}">${isFilled ? '★' : '☆'}</span>`;
+    }
+    
+    container.innerHTML = html;
+    
+    if (interactive) {
+      container.classList.add('rating-stars-input');
+      container.setAttribute('data-rating', ratingNum);
+    } else {
+      container.classList.remove('rating-stars-input');
+    }
+  }
+
+  /**
+   * 별점 입력 초기화 및 이벤트 리스너 설정
+   * @param {HTMLElement} container - 별점 입력 컨테이너 요소
+   * @param {HTMLElement} hiddenInput - 평점 값을 저장할 hidden input 요소
+   */
+  initRatingStarsInput(container, hiddenInput) {
+    if (!container || !hiddenInput) return;
+    
+    // 초기화: 모든 별을 빈 별로 설정
+    container.setAttribute('data-rating', '0');
+    container.innerHTML = '';
+    for (let i = 1; i <= 5; i++) {
+      const star = document.createElement('span');
+      star.className = 'star';
+      star.setAttribute('data-value', i.toString());
+      star.textContent = '☆';
+      container.appendChild(star);
+    }
+    
+    // 기존 이벤트 리스너 제거 (중복 방지)
+    const existingHandler = container._ratingHandler;
+    if (existingHandler) {
+      container.removeEventListener('click', existingHandler);
+    }
+    
+    // 클릭 이벤트 핸들러
+    const handleStarClick = (e) => {
+      const star = e.target.closest('.star');
+      if (!star) return;
+      
+      const value = parseInt(star.getAttribute('data-value'), 10);
+      if (isNaN(value) || value < 1 || value > 5) return;
+      
+      // 별점 업데이트
+      this.setRatingStars(container, value);
+      
+      // hidden input 업데이트
+      if (hiddenInput) {
+        hiddenInput.value = value.toString();
+      }
+    };
+    
+    // 마우스 오버 이벤트 (호버 효과)
+    const handleStarHover = (e) => {
+      const star = e.target.closest('.star');
+      if (!star) {
+        // 마우스가 별 영역을 벗어나면 현재 선택된 평점으로 복원
+        const currentRating = parseInt(container.getAttribute('data-rating'), 10) || 0;
+        this.setRatingStars(container, currentRating);
+        return;
+      }
+      
+      const value = parseInt(star.getAttribute('data-value'), 10);
+      if (isNaN(value) || value < 1 || value > 5) return;
+      
+      // 호버 시 미리보기 (실제 선택은 아님)
+      this.setRatingStars(container, value, false);
+    };
+    
+    container.addEventListener('click', handleStarClick);
+    container.addEventListener('mouseover', handleStarHover);
+    container.addEventListener('mouseleave', () => {
+      const currentRating = parseInt(container.getAttribute('data-rating'), 10) || 0;
+      this.setRatingStars(container, currentRating);
+    });
+    
+    // 핸들러 참조 저장 (나중에 제거하기 위해)
+    container._ratingHandler = handleStarClick;
+  }
+
+  /**
+   * 별점 설정 (내부 메서드)
+   * @param {HTMLElement} container - 별점 컨테이너 요소
+   * @param {number} rating - 평점 (0-5)
+   * @param {boolean} updateDataAttr - data-rating 속성 업데이트 여부 (기본값: true)
+   */
+  setRatingStars(container, rating, updateDataAttr = true) {
+    if (!container) return;
+    
+    const ratingNum = parseInt(rating, 10);
+    if (isNaN(ratingNum) || ratingNum < 0 || ratingNum > 5) {
+      ratingNum = 0;
+    }
+    
+    if (updateDataAttr) {
+      container.setAttribute('data-rating', ratingNum.toString());
+    }
+    
+    const stars = container.querySelectorAll('.star');
+    stars.forEach((star, index) => {
+      const value = index + 1;
+      if (value <= ratingNum) {
+        star.textContent = '★';
+        star.style.color = '#ffc107';
+      } else {
+        star.textContent = '☆';
+        star.style.color = '#ddd';
+      }
+    });
+  }
+
+  /**
    * 컴포넌트 정리 (구독 해제 및 리소스 정리)
    */
   destroy() {
@@ -1613,6 +2505,8 @@ class BookDetailView {
     this.progressEditHandler = null;
     this.progressInputChangeHandler = null;
     this.originalProgressValue = null;
+    this.handleBack = null;
+    this.handleErrorBack = null;
   }
 }
 

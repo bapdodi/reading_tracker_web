@@ -42,6 +42,5 @@ export class FooterView {
   }
 }
 
-export default FooterView;
 
 

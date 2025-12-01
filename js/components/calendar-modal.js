@@ -3,7 +3,7 @@
  * 한달 캘린더를 렌더링하고 날짜 선택 처리
  */
 
-import memoService from '../services/memo-service.js';
+import { memoService } from '../services/memo-service.js';
 
 export class CalendarModal {
   constructor(containerId) {
@@ -215,5 +215,4 @@ export class CalendarModal {
   }
 }
 
-export default CalendarModal;
 

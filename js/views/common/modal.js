@@ -333,6 +333,5 @@ export class Modal {
   }
 }
 
-export default Modal;
 
 

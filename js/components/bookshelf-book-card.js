@@ -85,9 +85,6 @@ export class BookshelfBookCard {
             ⋮
           </button>
           <div class="book-menu-dropdown" id="menu-${book.userBookId}">
-            <button class="book-menu-item" data-action="change-status" data-user-book-id="${book.userBookId}">
-              상태 변경
-            </button>
             <button class="book-menu-item danger" data-action="delete" data-user-book-id="${book.userBookId}">
               서재에서 삭제
             </button>
@@ -134,5 +131,4 @@ export class BookshelfBookCard {
   }
 }
 
-export default BookshelfBookCard;
 

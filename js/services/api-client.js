@@ -3,8 +3,8 @@
  * Fetch API 래퍼로, 인증 토큰 자동 추가 및 401 에러 처리 (토큰 갱신) 기능 제공
  */
 
-import tokenManager from '../utils/token-manager.js';
-import authState from '../state/auth-state.js';
+import { tokenManager } from '../utils/token-manager.js';
+import { authState } from '../state/auth-state.js';
 import { API_ENDPOINTS } from '../constants/api-endpoints.js';
 
 /**
@@ -69,9 +69,25 @@ class ApiClient {
     // 토큰 가져오기
     const accessToken = tokenManager.getAccessToken();
     
-    // 디버깅: 토큰 존재 여부 확인 (개발 환경)
+    // 인증이 필요 없는 엔드포인트 목록
+    const publicEndpoints = [
+      '/auth/login',
+      '/auth/signup',
+      '/auth/find-login-id',
+      '/auth/verify-account',
+      '/auth/reset-password',
+      '/users/duplicate/loginId',
+      '/users/duplicate/email',
+    ];
+    
+    // 현재 엔드포인트가 공개 엔드포인트인지 확인
+    const isPublicEndpoint = publicEndpoints.some(publicPath => 
+      cleanEndpoint.includes(publicPath)
+    );
+    
+    // 디버깅: 토큰 존재 여부 확인 (개발 환경, 공개 엔드포인트 제외)
     if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
-      if (!accessToken) {
+      if (!accessToken && !isPublicEndpoint) {
         console.warn('[API Client] Access Token이 없습니다. 인증이 필요할 수 있습니다.');
       }
     }
@@ -142,7 +158,31 @@ class ApiClient {
 
       return this.handleResponse(response, isJson);
     } catch (error) {
-      console.error('API 요청 오류:', error);
+      // 네트워크 에러 감지 및 처리
+      // fetch API는 네트워크 에러 시 TypeError를 발생시킴
+      const isNetworkError = 
+        error instanceof TypeError ||
+        (error.message && (
+          error.message.includes('Failed to fetch') ||
+          error.message.includes('NetworkError') ||
+          error.message.includes('Network request failed') ||
+          error.message.includes('fetch')
+        )) ||
+        error.name === 'NetworkError' ||
+        error.isNetworkError === true;
+      
+      if (isNetworkError) {
+        // 네트워크 연결 실패 (서버 종료, 네트워크 오류 등)
+        const networkError = new Error('서버에 연결할 수 없습니다. 서버가 실행 중인지 확인해주세요.');
+        networkError.name = 'NetworkError';
+        networkError.isNetworkError = true;
+        networkError.originalError = error;
+        console.error('[API Client] 네트워크 에러:', networkError.message);
+        throw networkError;
+      }
+      
+      // 기타 에러는 그대로 전달
+      console.error('[API Client] API 요청 오류:', error);
       throw error;
     }
   }
@@ -317,6 +357,5 @@ class ApiClient {
 // baseURL은 동적으로 가져오므로 인스턴스 생성 시점에는 기본값 사용
 export const apiClient = new ApiClient();
 
-export default apiClient;
 
 

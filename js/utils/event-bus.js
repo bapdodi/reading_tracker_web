@@ -91,8 +91,6 @@ class EventBus {
 }
 
 // 싱글톤 인스턴스 생성 및 export
-const eventBus = new EventBus();
-
-export default eventBus;
+export const eventBus = new EventBus();
 
 

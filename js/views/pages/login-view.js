@@ -3,11 +3,11 @@
  * 로그인 폼 처리 및 로그인 로직 관리
  */
 
-import authHelper from '../../utils/auth-helper.js';
+import { authHelper } from '../../utils/auth-helper.js';
 import { ROUTES } from '../../constants/routes.js';
-import LoadingSpinner from '../common/loading.js';
-import HeaderView from '../common/header.js';
-import FooterView from '../common/footer.js';
+import { LoadingSpinner } from '../common/loading.js';
+import { HeaderView } from '../common/header.js';
+import { FooterView } from '../common/footer.js';
 
 class LoginView {
   constructor() {
@@ -17,6 +17,11 @@ class LoginView {
     this.passwordInput = null;
     this.submitButton = null;
     this.isSubmitting = false;
+    
+    // 이벤트 핸들러 바인딩 (destroy에서 제거하기 위해)
+    this.handleSubmitBound = this.handleSubmit.bind(this);
+    this.handleLoginIdBlur = this.validateLoginId.bind(this);
+    this.handlePasswordBlur = this.validatePassword.bind(this);
     
     // 이미 로그인된 경우 서재 페이지로 리다이렉트
     if (authHelper.isAuthenticated()) {
@@ -48,19 +53,15 @@ class LoginView {
     }
     
     // 폼 제출 이벤트 리스너
-    this.form.addEventListener('submit', (e) => {
+    this.handleFormSubmit = (e) => {
       e.preventDefault();
-      this.handleSubmit();
-    });
+      this.handleSubmitBound();
+    };
+    this.form.addEventListener('submit', this.handleFormSubmit);
     
     // 실시간 입력 검증 (선택사항)
-    this.loginIdInput?.addEventListener('blur', () => {
-      this.validateLoginId();
-    });
-    
-    this.passwordInput?.addEventListener('blur', () => {
-      this.validatePassword();
-    });
+    this.loginIdInput?.addEventListener('blur', this.handleLoginIdBlur);
+    this.passwordInput?.addEventListener('blur', this.handlePasswordBlur);
   }
 
   /**
@@ -90,13 +91,8 @@ class LoginView {
       const result = await authHelper.handleLogin(loginData);
       
       if (result.success) {
-        // 로그인 성공
-        this.showSuccess('로그인 성공! 서재 페이지로 이동합니다...');
-        
-        // 서재 페이지로 리다이렉트
-        setTimeout(() => {
-          window.location.href = ROUTES.BOOKSHELF;
-        }, 500);
+        // 로그인 성공 - 즉시 서재 페이지로 리다이렉트
+        window.location.href = ROUTES.BOOKSHELF;
       } else {
         // 로그인 실패
         this.showError(result.error || '로그인에 실패했습니다.');
@@ -263,6 +259,32 @@ class LoginView {
         this.submitButton.textContent = '로그인';
       }
     }
+  }
+
+  /**
+   * 컴포넌트 정리
+   * 이벤트 리스너 제거 및 리소스 정리
+   */
+  destroy() {
+    // 폼 제출 이벤트 리스너 제거
+    if (this.form && this.handleFormSubmit) {
+      this.form.removeEventListener('submit', this.handleFormSubmit);
+    }
+    
+    // 입력 필드 이벤트 리스너 제거
+    this.loginIdInput?.removeEventListener('blur', this.handleLoginIdBlur);
+    this.passwordInput?.removeEventListener('blur', this.handlePasswordBlur);
+    
+    // 참조 정리
+    this.form = null;
+    this.errorMessageEl = null;
+    this.loginIdInput = null;
+    this.passwordInput = null;
+    this.submitButton = null;
+    this.handleFormSubmit = null;
+    this.handleSubmitBound = null;
+    this.handleLoginIdBlur = null;
+    this.handlePasswordBlur = null;
   }
 }
 

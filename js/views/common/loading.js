@@ -111,6 +111,5 @@ export class LoadingSpinner {
   }
 }
 
-export default LoadingSpinner;
 
 

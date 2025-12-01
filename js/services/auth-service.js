@@ -3,7 +3,7 @@
  * 인증 관련 API 호출 함수 제공
  */
 
-import apiClient from './api-client.js';
+import { apiClient } from './api-client.js';
 import { API_ENDPOINTS } from '../constants/api-endpoints.js';
 
 export const authService = {
@@ -91,7 +91,5 @@ export const authService = {
     return response; // boolean 반환
   },
 };
-
-export default authService;
 
 

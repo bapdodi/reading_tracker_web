@@ -3,7 +3,7 @@
  * 오늘의 흐름, 메모 작성/수정/삭제 등의 API 호출 함수 제공
  */
 
-import apiClient from './api-client.js';
+import { apiClient } from './api-client.js';
 import { API_ENDPOINTS } from '../constants/api-endpoints.js';
 
 export const memoService = {
@@ -61,6 +61,10 @@ export const memoService = {
       data.pageNumber = memoData.pageNumber;
     }
     
+    if (memoData.tagCategory) {
+      data.tagCategory = memoData.tagCategory;
+    }
+    
     if (memoData.memoStartTime) {
       data.memoStartTime = memoData.memoStartTime;
     }
@@ -81,6 +85,7 @@ export const memoService = {
     const data = {};
     if (memoData.content !== undefined) data.content = memoData.content;
     if (memoData.tags !== undefined) data.tags = memoData.tags;
+    if (memoData.tagCategory !== undefined) data.tagCategory = memoData.tagCategory;
     
     const response = await apiClient.put(API_ENDPOINTS.MEMOS.UPDATE(memoId), data);
     return response; // MemoResponse 반환
@@ -113,13 +118,15 @@ export const memoService = {
   /**
    * 책 덮기 (독서 활동 종료)
    * @param {number} userBookId - 사용자 책 ID
-   * @param {number} lastReadPage - 마지막으로 읽은 페이지 수
+   * @param {Object} requestData - 책 덮기 요청 데이터
+   * @param {number} requestData.lastReadPage - 마지막으로 읽은 페이지 수
+   * @param {string} [requestData.readingFinishedDate] - 독서 종료일 (Finished 카테고리일 때만)
+   * @param {number} [requestData.rating] - 평점 (Finished 카테고리일 때만)
+   * @param {string} [requestData.review] - 후기 (Finished 카테고리일 때만, 선택사항)
    * @returns {Promise<string>} 성공 메시지
    */
-  async closeBook(userBookId, lastReadPage) {
-    const response = await apiClient.post(API_ENDPOINTS.MEMOS.CLOSE_BOOK(userBookId), {
-      lastReadPage,
-    });
+  async closeBook(userBookId, requestData) {
+    const response = await apiClient.post(API_ENDPOINTS.MEMOS.CLOSE_BOOK(userBookId), requestData);
     return response; // 성공 메시지 반환
   },
 
@@ -134,6 +141,4 @@ export const memoService = {
     return response; // List<BookResponse> 반환
   },
 };
-
-export default memoService;
 

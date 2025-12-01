@@ -3,13 +3,13 @@
  * 회원가입 폼 처리 및 회원가입 로직 관리
  */
 
-import authHelper from '../../utils/auth-helper.js';
-import authService from '../../services/auth-service.js';
-import { validateLoginId, validateEmail, validatePassword, isPasswordMatch, validateName } from '../../utils/validators.js';
+import { authHelper } from '../../utils/auth-helper.js';
+import { authService } from '../../services/auth-service.js';
+import { validateLoginId, isValidEmail, validatePassword, isPasswordMatch, validateName } from '../../utils/validators.js';
 import { ROUTES } from '../../constants/routes.js';
-import LoadingSpinner from '../common/loading.js';
-import HeaderView from '../common/header.js';
-import FooterView from '../common/footer.js';
+import { LoadingSpinner } from '../common/loading.js';
+import { HeaderView } from '../common/header.js';
+import { FooterView } from '../common/footer.js';
 
 class RegisterView {
   constructor() {
@@ -26,6 +26,27 @@ class RegisterView {
     // 중복 확인 상태
     this.verifiedLoginId = false;
     this.verifiedEmail = false;
+    
+    // 이벤트 핸들러 바인딩 (destroy에서 제거하기 위해)
+    this.handleSubmitBound = this.handleSubmit.bind(this);
+    this.handleCheckLoginId = this.checkLoginIdDuplicate.bind(this);
+    this.handleCheckEmail = this.checkEmailDuplicate.bind(this);
+    this.handleLoginIdBlur = this.validateLoginId.bind(this);
+    this.handleEmailBlur = this.validateEmail.bind(this);
+    this.handleNameBlur = this.validateName.bind(this);
+    this.handlePasswordBlur = () => {
+      this.validatePassword();
+      this.validateConfirmPassword();
+    };
+    this.handleConfirmPasswordBlur = this.validateConfirmPassword.bind(this);
+    this.handleLoginIdInput = () => {
+      this.verifiedLoginId = false;
+      this.hideFieldSuccess('loginId');
+    };
+    this.handleEmailInput = () => {
+      this.verifiedEmail = false;
+      this.hideFieldSuccess('email');
+    };
     
     this.init();
   }
@@ -48,52 +69,34 @@ class RegisterView {
     }
     
     // 폼 제출 이벤트 리스너
-    this.form.addEventListener('submit', (e) => {
+    this.handleFormSubmit = (e) => {
       e.preventDefault();
-      this.handleSubmit();
-    });
+      this.handleSubmitBound();
+    };
+    this.form.addEventListener('submit', this.handleFormSubmit);
     
     // 중복 확인 버튼 이벤트
-    document.getElementById('check-loginId')?.addEventListener('click', () => {
-      this.checkLoginIdDuplicate();
-    });
-    
-    document.getElementById('check-email')?.addEventListener('click', () => {
-      this.checkEmailDuplicate();
-    });
+    const checkLoginIdBtn = document.getElementById('check-loginId');
+    const checkEmailBtn = document.getElementById('check-email');
+    checkLoginIdBtn?.addEventListener('click', this.handleCheckLoginId);
+    checkEmailBtn?.addEventListener('click', this.handleCheckEmail);
     
     // 실시간 입력 검증
-    document.getElementById('loginId')?.addEventListener('blur', () => {
-      this.validateLoginId();
-    });
+    const loginIdInput = document.getElementById('loginId');
+    const emailInput = document.getElementById('email');
+    const nameInput = document.getElementById('name');
+    const passwordInput = document.getElementById('password');
+    const confirmPasswordInput = document.getElementById('confirmPassword');
     
-    document.getElementById('email')?.addEventListener('blur', () => {
-      this.validateEmail();
-    });
-    
-    document.getElementById('name')?.addEventListener('blur', () => {
-      this.validateName();
-    });
-    
-    document.getElementById('password')?.addEventListener('blur', () => {
-      this.validatePassword();
-      this.validateConfirmPassword();
-    });
-    
-    document.getElementById('confirmPassword')?.addEventListener('blur', () => {
-      this.validateConfirmPassword();
-    });
+    loginIdInput?.addEventListener('blur', this.handleLoginIdBlur);
+    emailInput?.addEventListener('blur', this.handleEmailBlur);
+    nameInput?.addEventListener('blur', this.handleNameBlur);
+    passwordInput?.addEventListener('blur', this.handlePasswordBlur);
+    confirmPasswordInput?.addEventListener('blur', this.handleConfirmPasswordBlur);
     
     // 입력 변경 시 중복 확인 상태 초기화
-    document.getElementById('loginId')?.addEventListener('input', () => {
-      this.verifiedLoginId = false;
-      this.hideFieldSuccess('loginId');
-    });
-    
-    document.getElementById('email')?.addEventListener('input', () => {
-      this.verifiedEmail = false;
-      this.hideFieldSuccess('email');
-    });
+    loginIdInput?.addEventListener('input', this.handleLoginIdInput);
+    emailInput?.addEventListener('input', this.handleEmailInput);
   }
 
   /**
@@ -191,12 +194,12 @@ class RegisterView {
       const isDuplicate = await authService.checkLoginIdDuplicate(loginId);
       
       if (isDuplicate) {
-        this.showFieldError('loginId', '이미 사용 중인 로그인 ID입니다.');
+        this.showFieldError('loginId', '사용할 수 없는 아이디입니다.');
         this.verifiedLoginId = false;
         this.hideFieldSuccess('loginId');
       } else {
         this.hideFieldError('loginId');
-        this.showFieldSuccess('loginId');
+        this.showFieldSuccess('loginId', '사용할 수 있는 아이디입니다');
         this.verifiedLoginId = true;
       }
     } catch (error) {
@@ -225,7 +228,7 @@ class RegisterView {
       return;
     }
     
-    if (!validateEmail(email)) {
+    if (!isValidEmail(email)) {
       this.showFieldError('email', '올바른 이메일 형식이 아닙니다.');
       return;
     }
@@ -240,12 +243,12 @@ class RegisterView {
       const isDuplicate = await authService.checkEmailDuplicate(email);
       
       if (isDuplicate) {
-        this.showFieldError('email', '이미 사용 중인 이메일입니다.');
+        this.showFieldError('email', '사용할 수 없는 이메일입니다.');
         this.verifiedEmail = false;
         this.hideFieldSuccess('email');
       } else {
         this.hideFieldError('email');
-        this.showFieldSuccess('email');
+        this.showFieldSuccess('email', '사용할 수 있는 이메일입니다');
         this.verifiedEmail = true;
       }
     } catch (error) {
@@ -312,7 +315,7 @@ class RegisterView {
       return false;
     }
     
-    if (!validateEmail(value)) {
+    if (!isValidEmail(value)) {
       this.showFieldError('email', '올바른 이메일 형식이 아닙니다.');
       return false;
     }
@@ -441,10 +444,14 @@ class RegisterView {
   /**
    * 특정 필드 성공 메시지 표시
    * @param {string} fieldName - 필드 이름
+   * @param {string} message - 성공 메시지 (선택사항)
    */
-  showFieldSuccess(fieldName) {
+  showFieldSuccess(fieldName, message = null) {
     const successEl = document.getElementById(`${fieldName}-success`);
     if (successEl) {
+      if (message) {
+        successEl.textContent = message;
+      }
       successEl.style.display = 'block';
     }
   }
@@ -516,6 +523,54 @@ class RegisterView {
         submitButton.textContent = '회원가입';
       }
     }
+  }
+
+  /**
+   * 컴포넌트 정리
+   * 이벤트 리스너 제거 및 리소스 정리
+   */
+  destroy() {
+    // 폼 제출 이벤트 리스너 제거
+    if (this.form && this.handleFormSubmit) {
+      this.form.removeEventListener('submit', this.handleFormSubmit);
+    }
+    
+    // 중복 확인 버튼 이벤트 리스너 제거
+    const checkLoginIdBtn = document.getElementById('check-loginId');
+    const checkEmailBtn = document.getElementById('check-email');
+    checkLoginIdBtn?.removeEventListener('click', this.handleCheckLoginId);
+    checkEmailBtn?.removeEventListener('click', this.handleCheckEmail);
+    
+    // 입력 필드 이벤트 리스너 제거
+    const loginIdInput = document.getElementById('loginId');
+    const emailInput = document.getElementById('email');
+    const nameInput = document.getElementById('name');
+    const passwordInput = document.getElementById('password');
+    const confirmPasswordInput = document.getElementById('confirmPassword');
+    
+    loginIdInput?.removeEventListener('blur', this.handleLoginIdBlur);
+    emailInput?.removeEventListener('blur', this.handleEmailBlur);
+    nameInput?.removeEventListener('blur', this.handleNameBlur);
+    passwordInput?.removeEventListener('blur', this.handlePasswordBlur);
+    confirmPasswordInput?.removeEventListener('blur', this.handleConfirmPasswordBlur);
+    
+    loginIdInput?.removeEventListener('input', this.handleLoginIdInput);
+    emailInput?.removeEventListener('input', this.handleEmailInput);
+    
+    // 참조 정리
+    this.form = null;
+    this.errorMessageEl = null;
+    this.handleFormSubmit = null;
+    this.handleSubmitBound = null;
+    this.handleCheckLoginId = null;
+    this.handleCheckEmail = null;
+    this.handleLoginIdBlur = null;
+    this.handleEmailBlur = null;
+    this.handleNameBlur = null;
+    this.handlePasswordBlur = null;
+    this.handleConfirmPasswordBlur = null;
+    this.handleLoginIdInput = null;
+    this.handleEmailInput = null;
   }
 }
 

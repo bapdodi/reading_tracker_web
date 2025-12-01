@@ -93,6 +93,4 @@ export const tokenManager = {
   },
 };
 
-export default tokenManager;
-
 

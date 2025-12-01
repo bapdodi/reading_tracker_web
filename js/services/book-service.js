@@ -3,7 +3,7 @@
  * 도서 검색, 상세 정보 조회, 서재 관리 등의 API 호출 함수 제공
  */
 
-import apiClient from './api-client.js';
+import { apiClient } from './api-client.js';
 import { API_ENDPOINTS } from '../constants/api-endpoints.js';
 
 export const bookService = {
@@ -150,6 +150,4 @@ export const bookService = {
     return response; // 성공 메시지 반환
   },
 };
-
-export default bookService;
 

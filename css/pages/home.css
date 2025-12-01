@@ -98,67 +98,6 @@
   margin: 0;
 }
 
-/* 사용 방법 섹션 */
-.how-to-section {
-  padding: var(--spacing-2xl) 0;
-  background-color: var(--color-bg-primary);
-}
-
-.steps-list {
-  max-width: 800px;
-  margin: 0 auto;
-  display: flex;
-  flex-direction: column;
-  gap: var(--spacing-xl);
-}
-
-.step-item {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--spacing-lg);
-  padding: var(--spacing-lg);
-  background-color: var(--color-bg-secondary);
-  border-radius: var(--border-radius-lg);
-  transition: transform var(--transition-base),
-              box-shadow var(--transition-base);
-}
-
-.step-item:hover {
-  transform: translateX(8px);
-  box-shadow: var(--shadow-md);
-}
-
-.step-number {
-  width: 3rem;
-  height: 3rem;
-  border-radius: 50%;
-  background-color: var(--color-primary);
-  color: var(--color-text-white);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: var(--font-size-xl);
-  font-weight: var(--font-weight-bold);
-  flex-shrink: 0;
-}
-
-.step-content {
-  flex: 1;
-}
-
-.step-title {
-  font-size: var(--font-size-h3);
-  font-weight: var(--font-weight-semibold);
-  color: var(--color-text-primary);
-  margin: 0 0 var(--spacing-xs) 0;
-}
-
-.step-description {
-  font-size: var(--font-size-body);
-  color: var(--color-text-secondary);
-  margin: 0;
-  line-height: 1.6;
-}
 
 /* 반응형 */
 @media (max-width: 1024px) {
@@ -194,15 +133,6 @@
 
   .section-title {
     font-size: var(--font-size-h2);
-  }
-
-  .step-item {
-    flex-direction: column;
-    text-align: center;
-  }
-
-  .step-number {
-    margin: 0 auto;
   }
 }
 

@@ -1,18 +1,18 @@
 /**
  * 서재 페이지 뷰
- * 서재 목록 조회, 필터링, 정렬, 상태 변경, 삭제 등의 기능 제공
+ * 서재 목록 조회, 필터링, 정렬, 삭제 등의 기능 제공
  */
 
-import bookService from '../../services/book-service.js';
-import authHelper from '../../utils/auth-helper.js';
+import { bookService } from '../../services/book-service.js';
+import { authHelper } from '../../utils/auth-helper.js';
 import { BookshelfBookCard } from '../../components/bookshelf-book-card.js';
-import bookState from '../../state/book-state.js';
+import { bookState } from '../../state/book-state.js';
 import { BOOK_EVENTS } from '../../constants/events.js';
-import eventBus from '../../utils/event-bus.js';
+import { eventBus } from '../../utils/event-bus.js';
 import { ROUTES } from '../../constants/routes.js';
-import HeaderView from '../common/header.js';
-import FooterView from '../common/footer.js';
-import Modal from '../common/modal.js';
+import { HeaderView } from '../common/header.js';
+import { FooterView } from '../common/footer.js';
+import { Modal } from '../common/modal.js';
 
 class BookshelfView {
   constructor() {
@@ -34,8 +34,24 @@ class BookshelfView {
     // 모달 인스턴스
     this.modal = null;
     
-    // 보호된 페이지: 인증 확인
-    if (!authHelper.checkAuth()) {
+    // 이벤트 리스너 참조 (정리용)
+    this.eventListeners = [];
+    
+    // 이벤트 핸들러 바인딩 (destroy에서 제거하기 위해)
+    this.handleBookshelfListClick = this.handleBookshelfListClick.bind(this);
+    this.handleBack = this.handleBack.bind(this);
+    this.handleCategorySidebarClick = this.handleCategorySidebarClick.bind(this);
+    
+    // 보호된 페이지: 인증 확인 (비동기)
+    this.initAuth();
+  }
+
+  /**
+   * 인증 확인 및 초기화
+   */
+  async initAuth() {
+    const isAuthenticated = await authHelper.checkAuth();
+    if (!isAuthenticated) {
       return;
     }
     
@@ -61,42 +77,18 @@ class BookshelfView {
       return;
     }
     
-    // 뒤로가기 버튼 이벤트 리스너 (즉시 등록)
+    // 뒤로가기 버튼 이벤트 리스너
     this.setupBackButton();
     
     // 메뉴 버튼 클릭 이벤트 위임
-    this.bookshelfList.addEventListener('click', (e) => {
-      const menuBtn = e.target.closest('.btn-menu');
-      if (menuBtn) {
-        e.stopPropagation();
-        const userBookId = menuBtn.dataset.userBookId;
-        this.toggleMenu(userBookId);
-        return;
-      }
-      
-      // 메뉴 외부 클릭 시 모든 메뉴 닫기
-      if (!e.target.closest('.book-menu-dropdown')) {
-        this.closeAllMenus();
-      }
-      
-      // 상태 변경 버튼
-      if (e.target.dataset.action === 'change-status') {
-        e.preventDefault();
-        e.stopPropagation();
-        const userBookId = parseInt(e.target.dataset.userBookId);
-        this.handleChangeStatus(userBookId);
-        this.closeAllMenus();
-      }
-      
-      // 삭제 버튼
-      if (e.target.dataset.action === 'delete') {
-        e.preventDefault();
-        e.stopPropagation();
-        const userBookId = parseInt(e.target.dataset.userBookId);
-        this.handleDelete(userBookId);
-        this.closeAllMenus();
-      }
-    });
+    this.bookshelfList.addEventListener('click', this.handleBookshelfListClick);
+    this.eventListeners.push({ element: this.bookshelfList, event: 'click', handler: this.handleBookshelfListClick });
+    
+    // 카테고리 탭 클릭 이벤트 위임
+    if (this.categorySidebar) {
+      this.categorySidebar.addEventListener('click', this.handleCategorySidebarClick);
+      this.eventListeners.push({ element: this.categorySidebar, event: 'click', handler: this.handleCategorySidebarClick });
+    }
     
     // 초기 서재 로드
     this.loadBookshelf();
@@ -124,6 +116,14 @@ class BookshelfView {
       
       this.allBooks = response.books || [];
       
+      // 서재가 비어있는 경우 빈 상태 표시
+      if (this.allBooks.length === 0) {
+        this.extractCategories();
+        this.renderCategorySidebar();
+        this.showEmptyState(null);
+        return;
+      }
+      
       // 카테고리 목록 추출 (항상 모든 카테고리 표시)
       this.extractCategories();
       
@@ -142,7 +142,9 @@ class BookshelfView {
       }
     } catch (error) {
       console.error('서재 로드 오류:', error);
-      alert('서재를 불러오는 중 오류가 발생했습니다: ' + (error.message || '알 수 없는 오류'));
+      // 에러 발생 시에도 빈 상태 표시 (사용자에게 도서 검색 유도)
+      this.extractCategories();
+      this.renderCategorySidebar();
       this.showEmptyState(null);
     } finally {
       this.setLoading(false);
@@ -175,9 +177,6 @@ class BookshelfView {
       }
       tab.textContent = this.getCategoryLabel(category);
       tab.dataset.category = category;
-      tab.addEventListener('click', () => {
-        this.handleCategorySelect(category);
-      });
       
       this.categorySidebar.appendChild(tab);
     });
@@ -224,6 +223,14 @@ class BookshelfView {
    */
   async loadBooksByCategory(category) {
     this.setLoading(true);
+    
+    // 전체 도서가 0개이면 빈 상태를 유지 (카테고리 변경해도)
+    if (this.allBooks.length === 0) {
+      this.showEmptyState(null);
+      this.setLoading(false);
+      return;
+    }
+    
     this.hideEmptyState();
     
     try {
@@ -236,8 +243,12 @@ class BookshelfView {
       this.displayBookshelf(books);
     } catch (error) {
       console.error('카테고리별 도서 로드 오류:', error);
-      // 에러 발생 시에도 빈 공간만 표시 (안내문구 없음)
-      this.displayBookshelf([]);
+      // 에러 발생 시 전체 도서 개수 확인
+      if (this.allBooks.length === 0) {
+        this.showEmptyState(null);
+      } else {
+        this.displayBookshelf([]);
+      }
     } finally {
       this.setLoading(false);
     }
@@ -250,20 +261,29 @@ class BookshelfView {
   displayBookshelf(books) {
     if (!this.bookshelfList) return;
     
+    // 전체 도서가 0개이면 빈 상태 표시
+    if (this.allBooks.length === 0) {
+      this.showEmptyState(null);
+      this.bookshelfList.innerHTML = '';
+      return;
+    }
+    
     // API에서 이미 카테고리별로 필터링된 결과를 받으므로 추가 필터링 불필요
     this.bookshelfList.innerHTML = '';
     
-    // 책이 있으면 표시, 없으면 빈 공간만 표시 (안내문구 없음)
+    // 책이 있으면 표시
     if (books && books.length > 0) {
       books.forEach((book) => {
         const cardHtml = BookshelfBookCard.render(book);
         const cardElement = document.createRange().createContextualFragment(cardHtml);
         this.bookshelfList.appendChild(cardElement);
       });
+      // 전체 도서가 1개 이상이면 빈 상태 숨김
+      this.hideEmptyState();
+    } else {
+      // 카테고리별로 책이 없지만 전체 도서가 1개 이상이면 빈 공간만 표시
+      this.hideEmptyState();
     }
-    
-    // 빈 상태 메시지는 표시하지 않음 (빈 공간만 표시)
-    this.hideEmptyState();
   }
 
 
@@ -286,56 +306,6 @@ class BookshelfView {
     document.querySelectorAll('.book-menu-dropdown').forEach((menu) => {
       menu.classList.remove('active');
     });
-  }
-
-  /**
-   * 상태 변경 처리
-   * @param {number} userBookId - 사용자 도서 ID
-   */
-  async handleChangeStatus(userBookId) {
-    const book = this.allBooks.find(b => b.userBookId === userBookId);
-    if (!book) return;
-    
-    const categories = [
-      { value: 'ToRead', label: '읽고 싶은 책' },
-      { value: 'Reading', label: '읽는 중' },
-      { value: 'AlmostFinished', label: '거의 다 읽음' },
-      { value: 'Finished', label: '읽은 책' },
-    ];
-    
-    // 현재 상태 제외
-    const availableCategories = categories.filter(c => c.value !== book.category);
-    
-    // 간단한 선택 UI (prompt 사용)
-    const options = availableCategories.map((c, idx) => `${idx + 1}. ${c.label}`).join('\n');
-    const choice = prompt(`상태를 변경하세요:\n${options}\n\n번호를 입력하세요:`, '1');
-    
-    if (!choice || isNaN(choice)) return;
-    
-    const choiceIndex = parseInt(choice) - 1;
-    if (choiceIndex < 0 || choiceIndex >= availableCategories.length) {
-      alert('잘못된 선택입니다.');
-      return;
-    }
-    
-    const selectedCategory = availableCategories[choiceIndex].value;
-    
-    try {
-      await bookService.updateBookStatus(userBookId, selectedCategory);
-      
-      // 성공 메시지
-      alert('도서 상태가 변경되었습니다.');
-      
-      // 전체 서재 다시 로드 (카테고리 목록이 변경될 수 있음)
-      await this.loadBookshelf();
-      
-      // 상태 업데이트
-      bookState.updateBookStatus(userBookId, { category: selectedCategory });
-      
-    } catch (error) {
-      console.error('상태 변경 오류:', error);
-      alert('상태 변경 중 오류가 발생했습니다: ' + (error.message || '알 수 없는 오류'));
-    }
   }
 
   /**
@@ -387,12 +357,8 @@ class BookshelfView {
       // 성공 메시지
       alert('도서가 서재에서 삭제되었습니다.');
       
-      // 현재 카테고리의 책들 다시 로드 (화면에서 도서 카드 제거)
-      if (this.currentCategory) {
-        await this.loadBooksByCategory(this.currentCategory);
-      } else {
-        await this.loadBookshelf();
-      }
+      // 전체 서재 다시 로드 (allBooks 업데이트 및 빈 상태 확인을 위해)
+      await this.loadBookshelf();
       
       // 상태 업데이트
       bookState.removeBook(userBookId);
@@ -416,14 +382,53 @@ class BookshelfView {
   }
 
   /**
-   * 뒤로가기 버튼 설정 (즉시 등록)
+   * 서재 리스트 클릭 이벤트 처리
+   * @param {Event} e - 클릭 이벤트
+   */
+  handleBookshelfListClick(e) {
+    const menuBtn = e.target.closest('.btn-menu');
+    if (menuBtn) {
+      e.stopPropagation();
+      const userBookId = menuBtn.dataset.userBookId;
+      this.toggleMenu(userBookId);
+      return;
+    }
+    
+    // 메뉴 외부 클릭 시 모든 메뉴 닫기
+    if (!e.target.closest('.book-menu-dropdown')) {
+      this.closeAllMenus();
+    }
+    
+    // 삭제 버튼
+    if (e.target.dataset.action === 'delete') {
+      e.preventDefault();
+      e.stopPropagation();
+      const userBookId = parseInt(e.target.dataset.userBookId);
+      this.handleDelete(userBookId);
+      this.closeAllMenus();
+    }
+  }
+
+  /**
+   * 카테고리 사이드바 클릭 이벤트 처리
+   * @param {Event} e - 클릭 이벤트
+   */
+  handleCategorySidebarClick(e) {
+    const tab = e.target.closest('.category-tab');
+    if (tab && tab.dataset.category) {
+      const category = tab.dataset.category;
+      this.handleCategorySelect(category);
+    }
+  }
+
+  /**
+   * 뒤로가기 버튼 설정
    */
   setupBackButton() {
     const btnBack = document.getElementById('btn-back');
     if (btnBack) {
-      btnBack.addEventListener('click', () => {
-        this.handleBack();
-      });
+      btnBack.addEventListener('click', this.handleBack);
+      this.eventListeners.push({ element: btnBack, event: 'click', handler: this.handleBack });
     } else {
       // DOM이 아직 준비되지 않았으면 재시도
       setTimeout(() => this.setupBackButton(), 50);
@@ -496,6 +501,26 @@ class BookshelfView {
       this.unsubscribers.forEach(unsubscribe => unsubscribe());
       this.unsubscribers = [];
     }
+    
+    // 모든 이벤트 리스너 제거
+    if (this.eventListeners) {
+      this.eventListeners.forEach(({ element, event, handler }) => {
+        if (element && handler) {
+          element.removeEventListener(event, handler);
+        }
+      });
+      this.eventListeners = [];
+    }
+    
+    // 참조 정리
+    this.bookshelfList = null;
+    this.loadingSpinner = null;
+    this.emptyState = null;
+    this.categorySidebar = null;
+    this.modal = null;
+    this.handleBookshelfListClick = null;
+    this.handleBack = null;
+    this.handleCategorySidebarClick = null;
   }
 }
 

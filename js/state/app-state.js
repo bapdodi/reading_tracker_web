@@ -3,7 +3,7 @@
  * 로딩 상태, 에러 상태, 현재 페이지 등의 전역 상태를 관리합니다.
  */
 
-import eventBus from '../utils/event-bus.js';
+import { eventBus } from '../utils/event-bus.js';
 import { APP_EVENTS } from '../constants/events.js';
 
 class AppState {
@@ -124,6 +124,5 @@ class AppState {
 // 싱글톤 인스턴스 생성 및 export
 export const appState = new AppState();
 
-export default appState;
 
 

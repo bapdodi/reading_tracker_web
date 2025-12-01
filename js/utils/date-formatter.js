@@ -122,13 +122,5 @@ export function daysBetween(date1, date2) {
   return Math.floor(diffMs / (1000 * 60 * 60 * 24));
 }
 
-export default {
-  formatDate,
-  formatDateKorean,
-  formatDateTime,
-  formatRelativeTime,
-  isValidDate,
-  daysBetween,
-};
 
 

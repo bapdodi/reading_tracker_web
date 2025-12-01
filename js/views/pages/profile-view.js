@@ -3,13 +3,13 @@
  * 프로필 정보 조회 및 수정 로직
  */
 
-import userService from '../../services/user-service.js';
-import authHelper from '../../utils/auth-helper.js';
-import authState from '../../state/auth-state.js';
+import { userService } from '../../services/user-service.js';
+import { authHelper } from '../../utils/auth-helper.js';
+import { authState } from '../../state/auth-state.js';
 import { isValidEmail } from '../../utils/validators.js';
 import { ROUTES } from '../../constants/routes.js';
-import HeaderView from '../common/header.js';
-import FooterView from '../common/footer.js';
+import { HeaderView } from '../common/header.js';
+import { FooterView } from '../common/footer.js';
 
 class ProfileView {
   constructor() {
@@ -20,8 +20,23 @@ class ProfileView {
     this.originalProfileData = null;
     this.isSubmitting = false;
     
-    // 보호된 페이지: 인증 확인
-    if (!authHelper.checkAuth()) {
+    // 이벤트 핸들러 바인딩 (destroy에서 제거하기 위해)
+    this.handleSubmitBound = this.handleSubmit.bind(this);
+    this.handleCancel = this.resetForm.bind(this);
+    this.handleLogout = this.handleLogout.bind(this);
+    this.handleBack = this.handleBack.bind(this);
+    this.handleEmailBlur = this.validateEmail.bind(this);
+    
+    // 보호된 페이지: 인증 확인 (비동기)
+    this.initAuth();
+  }
+
+  /**
+   * 인증 확인 및 초기화
+   */
+  async initAuth() {
+    const isAuthenticated = await authHelper.checkAuth();
+    if (!isAuthenticated) {
       return;
     }
     
@@ -48,34 +63,30 @@ class ProfileView {
     }
     
     // 폼 제출 이벤트 리스너
-    this.form.addEventListener('submit', (e) => {
+    this.handleFormSubmit = (e) => {
       e.preventDefault();
-      this.handleSubmit();
-    });
+      this.handleSubmitBound();
+    };
+    this.form.addEventListener('submit', this.handleFormSubmit);
     
     // 취소 버튼 이벤트 리스너
     const btnCancel = document.getElementById('btn-cancel');
     if (btnCancel) {
-      btnCancel.addEventListener('click', () => {
-        this.resetForm();
-      });
+      btnCancel.addEventListener('click', this.handleCancel);
     }
     
     // 로그아웃 버튼 이벤트 리스너
     const btnLogout = document.getElementById('btn-logout');
     if (btnLogout) {
-      btnLogout.addEventListener('click', () => {
-        this.handleLogout();
-      });
+      btnLogout.addEventListener('click', this.handleLogout);
     }
     
-    // 뒤로가기 버튼 이벤트 리스너 (즉시 등록)
+    // 뒤로가기 버튼 이벤트 리스너
     this.setupBackButton();
     
     // 실시간 입력 검증
-    document.getElementById('email')?.addEventListener('blur', () => {
-      this.validateEmail();
-    });
+    const emailInput = document.getElementById('email');
+    emailInput?.addEventListener('blur', this.handleEmailBlur);
     
     // 프로필 정보 로드
     this.loadProfile();
@@ -356,14 +367,12 @@ class ProfileView {
   }
 
   /**
-   * 뒤로가기 버튼 설정 (즉시 등록)
+   * 뒤로가기 버튼 설정
    */
   setupBackButton() {
     const btnBack = document.getElementById('btn-back');
     if (btnBack) {
-      btnBack.addEventListener('click', () => {
-        this.handleBack();
-      });
+      btnBack.addEventListener('click', this.handleBack);
     } else {
       // DOM이 아직 준비되지 않았으면 재시도
       setTimeout(() => this.setupBackButton(), 50);
@@ -474,6 +483,46 @@ class ProfileView {
     if (cancelButton) {
       cancelButton.disabled = loading;
     }
+  }
+
+  /**
+   * 컴포넌트 정리
+   * 이벤트 리스너 제거 및 리소스 정리
+   */
+  destroy() {
+    // 폼 제출 이벤트 리스너 제거
+    if (this.form && this.handleFormSubmit) {
+      this.form.removeEventListener('submit', this.handleFormSubmit);
+    }
+    
+    // 취소 버튼 이벤트 리스너 제거
+    const btnCancel = document.getElementById('btn-cancel');
+    btnCancel?.removeEventListener('click', this.handleCancel);
+    
+    // 로그아웃 버튼 이벤트 리스너 제거
+    const btnLogout = document.getElementById('btn-logout');
+    btnLogout?.removeEventListener('click', this.handleLogout);
+    
+    // 뒤로가기 버튼 이벤트 리스너 제거
+    const btnBack = document.getElementById('btn-back');
+    btnBack?.removeEventListener('click', this.handleBack);
+    
+    // 입력 필드 이벤트 리스너 제거
+    const emailInput = document.getElementById('email');
+    emailInput?.removeEventListener('blur', this.handleEmailBlur);
+    
+    // 참조 정리
+    this.form = null;
+    this.loadingSpinner = null;
+    this.profileSection = null;
+    this.errorSection = null;
+    this.originalProfileData = null;
+    this.handleFormSubmit = null;
+    this.handleSubmitBound = null;
+    this.handleCancel = null;
+    this.handleLogout = null;
+    this.handleBack = null;
+    this.handleEmailBlur = null;
   }
 }
 

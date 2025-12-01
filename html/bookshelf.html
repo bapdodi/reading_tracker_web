@@ -91,28 +91,6 @@
     
     <!-- 서재 페이지 뷰 -->
     <script type="module" src="../js/views/pages/bookshelf-view.js"></script>
-    
-    <!-- 뒤로가기 버튼 즉시 등록 (모듈 로딩 전에도 작동) -->
-    <script>
-      // DOM이 준비되면 즉시 이벤트 리스너 등록
-      (function() {
-        function setupBackButton() {
-          const btnBack = document.getElementById('btn-back');
-          if (btnBack) {
-            btnBack.addEventListener('click', function() {
-              window.location.href = '/';
-            });
-          } else if (document.readyState === 'loading') {
-            document.addEventListener('DOMContentLoaded', setupBackButton);
-          }
-        }
-        if (document.readyState === 'loading') {
-          document.addEventListener('DOMContentLoaded', setupBackButton);
-        } else {
-          setupBackButton();
-        }
-      })();
-    </script>
 </body>
 </html>
 

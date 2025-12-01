@@ -202,15 +202,4 @@ export function isValidISBN(isbn) {
   return isbnRegex.test(isbn.replace(/-/g, ''));
 }
 
-export default {
-  isValidEmail,
-  validatePassword,
-  isPasswordMatch,
-  validateLoginId,
-  validateName,
-  validateRequired,
-  validateNumberRange,
-  isValidISBN,
-};
-
 

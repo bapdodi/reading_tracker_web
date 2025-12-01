@@ -3,10 +3,10 @@
  * 도서 검색 폼 처리 및 검색 결과 표시 로직
  */
 
-import bookService from '../../services/book-service.js';
+import { bookService } from '../../services/book-service.js';
 import { BookCard } from '../../components/book-card.js';
-import HeaderView from '../common/header.js';
-import FooterView from '../common/footer.js';
+import { HeaderView } from '../common/header.js';
+import { FooterView } from '../common/footer.js';
 import { enforceImageSafety } from '../../utils/image-safety.js';
 
 class BookSearchView {

@@ -3,7 +3,7 @@
  * 서재 데이터, 검색 결과 등의 도서 관련 상태를 관리합니다.
  */
 
-import eventBus from '../utils/event-bus.js';
+import { eventBus } from '../utils/event-bus.js';
 import { BOOK_EVENTS } from '../constants/events.js';
 
 class BookState {
@@ -201,7 +201,5 @@ class BookState {
 
 // 싱글톤 인스턴스 생성 및 export
 export const bookState = new BookState();
-
-export default bookState;
 
 

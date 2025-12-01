@@ -3,7 +3,7 @@
  * 프로필 조회, 수정 등의 API 호출 함수 제공
  */
 
-import apiClient from './api-client.js';
+import { apiClient } from './api-client.js';
 import { API_ENDPOINTS } from '../constants/api-endpoints.js';
 
 export const userService = {
@@ -28,6 +28,4 @@ export const userService = {
     return response; // UserProfileResponse 반환
   },
 };
-
-export default userService;
 

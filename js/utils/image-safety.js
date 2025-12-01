@@ -68,10 +68,4 @@ export function enforceImageSafety() {
   }, true);
 }
 
-export default {
-  isBlockedUrl,
-  getSafeImageUrl,
-  enforceImageSafety,
-  DEFAULT_COVER_IMAGE,
-};
 

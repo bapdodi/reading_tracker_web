@@ -3,8 +3,8 @@
  * 인증 상태에 따라 메뉴가 변경되는 공통 헤더 컴포넌트
  */
 
-import authState from '../../state/auth-state.js';
-import eventBus from '../../utils/event-bus.js';
+import { authState } from '../../state/auth-state.js';
+import { eventBus } from '../../utils/event-bus.js';
 import { AUTH_EVENTS } from '../../constants/events.js';
 import { ROUTES } from '../../constants/routes.js';
 
@@ -37,6 +37,9 @@ export class HeaderView {
     const isAuthenticated = authState.getIsAuthenticated();
     const user = authState.getUser();
     
+    // 인증 상태가 명확하지 않은 경우 비인증 상태로 처리
+    const shouldShowAuthenticatedNav = isAuthenticated === true && user !== null;
+    
     this.container.innerHTML = `
       <header class="header">
         <div class="container">
@@ -45,7 +48,7 @@ export class HeaderView {
               <a href="${ROUTES.HOME}">Reading Tracker</a>
             </div>
             <nav class="header-nav">
-              ${isAuthenticated ? this.renderAuthenticatedNav(user) : this.renderUnauthenticatedNav()}
+              ${shouldShowAuthenticatedNav ? this.renderAuthenticatedNav(user) : this.renderUnauthenticatedNav()}
             </nav>
           </div>
         </div>
@@ -96,7 +99,8 @@ export class HeaderView {
     if (logoutBtn) {
       logoutBtn.addEventListener('click', () => {
         authState.logout();
-        window.location.href = ROUTES.LOGIN;
+        // 로그아웃 후 홈 화면 유지 (로그인 화면으로 리다이렉트하지 않음)
+        // 헤더는 자동으로 비인증 상태로 렌더링됨 (subscribeToAuthEvents에서 처리)
       });
     }
   }
@@ -136,6 +140,5 @@ export class HeaderView {
   }
 }
 
-export default HeaderView;
 
 

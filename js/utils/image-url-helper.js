@@ -83,8 +83,4 @@ export function optimizeImageUrl(imageUrl) {
   return url;
 }
 
-export default {
-  enhanceImageUrl,
-  optimizeImageUrl,
-};
 

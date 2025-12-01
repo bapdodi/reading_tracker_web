@@ -4,7 +4,7 @@
  */
 
 import { ROUTES } from '../constants/routes.js';
-import authHelper from '../utils/auth-helper.js';
+import { authHelper } from '../utils/auth-helper.js';
 import { optimizeImageUrl } from '../utils/image-url-helper.js';
 import { getSafeImageUrl } from '../utils/image-safety.js';
 
@@ -109,5 +109,4 @@ export class BookCard {
   }
 }
 
-export default BookCard;
 

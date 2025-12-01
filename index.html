@@ -75,54 +75,6 @@
                     </div>
                 </div>
             </section>
-            
-            <!-- 사용 방법 섹션 -->
-            <section class="how-to-section">
-                <div class="container">
-                    <h2 class="section-title">사용 방법</h2>
-                    <div class="steps-list">
-                        <div class="step-item">
-                            <div class="step-number">1</div>
-                            <div class="step-content">
-                                <h3 class="step-title">회원가입</h3>
-                                <p class="step-description">
-                                    간단한 정보 입력으로 계정을 만드세요.
-                                </p>
-                            </div>
-                        </div>
-                        
-                        <div class="step-item">
-                            <div class="step-number">2</div>
-                            <div class="step-content">
-                                <h3 class="step-title">도서 검색</h3>
-                                <p class="step-description">
-                                    읽고 싶은 책을 검색하고 상세 정보를 확인하세요.
-                                </p>
-                            </div>
-                        </div>
-                        
-                        <div class="step-item">
-                            <div class="step-number">3</div>
-                            <div class="step-content">
-                                <h3 class="step-title">서재에 추가</h3>
-                                <p class="step-description">
-                                    관심 있는 책을 내 서재에 추가하고 관리하세요.
-                                </p>
-                            </div>
-                        </div>
-                        
-                        <div class="step-item">
-                            <div class="step-number">4</div>
-                            <div class="step-content">
-                                <h3 class="step-title">독서 기록</h3>
-                                <p class="step-description">
-                                    읽은 책에 대한 메모와 평점을 기록하세요.
-                                </p>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </section>
         </main>
         
         <!-- 푸터 -->
@@ -145,8 +97,8 @@
     
     <!-- 홈 페이지 초기화 -->
     <script type="module">
-        import HeaderView from './js/views/common/header.js';
-        import FooterView from './js/views/common/footer.js';
+        import { HeaderView } from './js/views/common/header.js';
+        import { FooterView } from './js/views/common/footer.js';
         
         // 헤더와 푸터 렌더링
         new HeaderView('header');

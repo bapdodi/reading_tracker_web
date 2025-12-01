@@ -3,10 +3,12 @@
  * 인증 상태 확인 및 로그인/로그아웃 처리 헬퍼 함수
  */
 
-import authState from '../state/auth-state.js';
-import tokenManager from './token-manager.js';
-import authService from '../services/auth-service.js';
+import { authState } from '../state/auth-state.js';
+import { tokenManager } from './token-manager.js';
+import { authService } from '../services/auth-service.js';
 import { ROUTES } from '../constants/routes.js';
+import { eventBus } from './event-bus.js';
+import { AUTH_EVENTS } from '../constants/events.js';
 
 export const authHelper = {
   /**
@@ -20,13 +22,33 @@ export const authHelper = {
   /**
    * 보호된 페이지 접근 확인
    * 미인증 시 로그인 페이지로 리다이렉트
-   * @returns {boolean} 인증 여부
+   * 토큰이 있으면 인증 상태 복원을 기다림
+   * @returns {Promise<boolean>} 인증 여부
    */
-  checkAuth() {
+  async checkAuth() {
+    // 토큰이 있으면 인증 상태 복원 대기
+    if (tokenManager.hasAccessToken() && !authState.getIsAuthenticated()) {
+      // restoreAuthState가 이미 실행 중이면 완료될 때까지 대기
+      if (authState.getIsRestoring()) {
+        await authState.waitForRestore();
+      } else {
+        // restoreAuthState가 실행되지 않았으면 수동으로 실행
+        await authState.restoreAuthState();
+      }
+    }
+    
+    // 인증 상태 확인
     if (!this.isAuthenticated()) {
+      console.warn('[AuthHelper] 인증되지 않음, 로그인 페이지로 리다이렉트:', {
+        hasAccessToken: tokenManager.hasAccessToken(),
+        hasRefreshToken: tokenManager.hasRefreshToken(),
+        isAuthenticated: authState.getIsAuthenticated(),
+        user: authState.getUser()
+      });
       window.location.href = ROUTES.LOGIN;
       return false;
     }
+    
     return true;
   },
 
@@ -39,6 +61,15 @@ export const authHelper = {
     try {
       const response = await authService.login(loginData);
       
+      // 토큰이 없는 경우 에러 처리
+      if (!response?.accessToken) {
+        throw new Error('로그인 응답에 accessToken이 없습니다.');
+      }
+      
+      if (!response?.refreshToken) {
+        throw new Error('로그인 응답에 refreshToken이 없습니다.');
+      }
+      
       // 토큰 저장
       tokenManager.setTokens(response.accessToken, response.refreshToken);
       
@@ -50,7 +81,7 @@ export const authHelper = {
         user: response.user,
       };
     } catch (error) {
-      console.error('로그인 실패:', error);
+      console.error('[AuthHelper] 로그인 실패:', error);
       
       // 필드별 에러 메시지 처리
       let errorMessage = error.message || '로그인에 실패했습니다.';
@@ -119,6 +150,28 @@ export const authHelper = {
   },
 };
 
-export default authHelper;
+/**
+ * 네트워크 에러로 인한 로그아웃 시 리다이렉트 처리
+ * 모듈 로드 시 자동으로 이벤트 구독 설정
+ */
+(function initAuthHelper() {
+  // 로그아웃 이벤트 구독 (네트워크 에러로 인한 로그아웃 시 리다이렉트)
+  eventBus.subscribe(AUTH_EVENTS.LOGOUT, (data) => {
+    // 네트워크 에러로 인한 로그아웃인 경우에만 리다이렉트
+    if (data.reason === 'network_error') {
+      // 로그인 페이지가 아닌 경우에만 리다이렉트
+      // (로그인 페이지에서는 무한 리다이렉트 방지)
+      const currentPath = window.location.pathname;
+      if (currentPath !== '/html/login.html' && 
+          currentPath !== '/login.html' &&
+          !currentPath.includes('login.html')) {
+        // 약간의 지연 후 리다이렉트 (이벤트 발행 완료 대기)
+        setTimeout(() => {
+          window.location.href = ROUTES.LOGIN;
+        }, 100);
+      }
+    }
+  });
+})();
 
 
