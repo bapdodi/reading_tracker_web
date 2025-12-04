@@ -3,16 +3,16 @@
  * 바인더 노트 형식의 메모 작성 및 관리 화면
  */
 
-import { memoService } from '../../services/memo-service.js';
-import { bookService } from '../../services/book-service.js';
-import { authHelper } from '../../utils/auth-helper.js';
-import { MemoCard } from '../../components/memo-card.js';
-import { CalendarModal } from '../../components/calendar-modal.js';
 import { BookSelector } from '../../components/book-selector.js';
+import { CalendarModal } from '../../components/calendar-modal.js';
+import { MemoCard } from '../../components/memo-card.js';
 import { MemoEditor } from '../../components/memo-editor.js';
-import { HeaderView } from '../common/header.js';
-import { FooterView } from '../common/footer.js';
 import { ROUTES } from '../../constants/routes.js';
+import { memoService } from '../../services/memo-service.js';
+import { memoWebSocketService } from '../../services/memo-websocket-service.js';
+import { authHelper } from '../../utils/auth-helper.js';
+import { FooterView } from '../common/footer.js';
+import { HeaderView } from '../common/header.js';
 
 class FlowView {
   constructor() {
@@ -62,6 +62,12 @@ class FlowView {
     this.currentPage = 1; // 현재 페이지 (1부터 시작)
     this.memosPerPage = 5; // 페이지당 메모 개수
     this.totalPages = 1; // 전체 페이지 수
+    
+    // WebSocket 실시간 동기화 상태
+    this.wsConnected = false; // WebSocket 연결 상태
+    this.wsMemoId = null; // WebSocket으로 생성된 메모 ID (임시)
+    this.wsUpdateDebounceTimer = null; // 업데이트 debounce 타이머
+    this.wsUpdateDebounceDelay = 500; // debounce 딜레이 (ms)
     
     // 컴포넌트
     this.calendarModal = null;
@@ -170,6 +176,12 @@ class FlowView {
     this.memoEditor.setOnCancel(() => {
       this.handleMemoCancel();
     });
+    this.memoEditor.setOnInput((memoData) => {
+      this.handleMemoInput(memoData);
+    });
+    
+    // WebSocket 이벤트 리스너 설정
+    this.setupWebSocketListeners();
     
     // 초기 데이터 로드
     this.loadMemoFlow();
@@ -1376,7 +1388,173 @@ class FlowView {
     // 새 책 선택 시 마지막 페이지로 이동하여 메모 작성 UI 표시
     this.currentPage = 999; // 마지막 페이지로 이동하도록 표시
     await this.loadMemoFlow();
+    
+    // WebSocket 연결 및 메모 작성 시작
+    await this.startMemoWebSocket();
   }
+
+  // ==================== WebSocket 실시간 동기화 ====================
+
+  /**
+   * WebSocket 이벤트 리스너 설정
+   */
+  setupWebSocketListeners() {
+    // 메모 생성 응답
+    memoWebSocketService.on('memo:create', (response) => {
+      console.log('[FlowView] WebSocket memo:create 응답:', response);
+      if (response && response.memoId) {
+        this.wsMemoId = response.memoId;
+      }
+    });
+
+    // 메모 업데이트 응답
+    memoWebSocketService.on('memo:update', (response) => {
+      console.log('[FlowView] WebSocket memo:update 응답:', response);
+    });
+
+    // 메모 삭제 응답
+    memoWebSocketService.on('memo:delete', (response) => {
+      console.log('[FlowView] WebSocket memo:delete 응답:', response);
+    });
+
+    // 연결 상태 변경
+    memoWebSocketService.on('connectionStateChange', ({ state }) => {
+      console.log('[FlowView] WebSocket 연결 상태:', state);
+      this.wsConnected = (state === 'CONNECTED');
+    });
+
+    // 에러 처리
+    memoWebSocketService.on('error', (error) => {
+      console.error('[FlowView] WebSocket 에러:', error);
+    });
+  }
+
+  /**
+   * WebSocket 연결 및 메모 생성 시작
+   * 메모 작성을 시작할 때 호출
+   */
+  async startMemoWebSocket() {
+    if (!this.selectedBookId) {
+      console.warn('[FlowView] WebSocket 시작 실패: 책이 선택되지 않음');
+      return;
+    }
+
+    try {
+      // 사용자 ID를 roomId로 사용 (authHelper에서 가져오기)
+      const user = authHelper.getCurrentUser();
+      const roomId = user?.id || user?.userId || 1;
+
+      // WebSocket 연결
+      await memoWebSocketService.connect(roomId);
+      this.wsConnected = true;
+
+      // 초기 메모 생성 요청
+      const now = new Date();
+      const memoStartTime = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}T${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
+
+      await memoWebSocketService.createMemo({
+        userBookId: this.selectedBookId,
+        content: '', // 초기 빈 내용
+        pageNumber: 1, // 기본 페이지 번호
+        tags: [],
+        memoStartTime: memoStartTime,
+      });
+
+      console.log('[FlowView] WebSocket 메모 작성 시작');
+    } catch (error) {
+      console.error('[FlowView] WebSocket 연결 실패:', error);
+      this.wsConnected = false;
+    }
+  }
+
+  /**
+   * 메모 입력 변경 처리 (debounce 적용)
+   * @param {Object} memoData - 메모 에디터에서 전달된 메모 데이터
+   */
+  handleMemoInput(memoData) {
+    // WebSocket 연결 안 되어 있으면 스킵 (연결은 책 선택/수정 진입 시 수행)
+    if (!this.wsConnected) {
+      return;
+    }
+
+    // debounce 적용
+    if (this.wsUpdateDebounceTimer) {
+      clearTimeout(this.wsUpdateDebounceTimer);
+    }
+
+    this.wsUpdateDebounceTimer = setTimeout(() => {
+      this.sendMemoUpdate(memoData);
+    }, this.wsUpdateDebounceDelay);
+  }
+
+  /**
+   * WebSocket으로 메모 업데이트 전송
+   * @param {Object} memoData - 메모 데이터
+   */
+  async sendMemoUpdate(memoData) {
+    if (!this.wsConnected || !this.wsMemoId) {
+      console.warn('[FlowView] WebSocket 업데이트 스킵: 연결 안 됨 또는 memoId 없음');
+      return;
+    }
+
+    try {
+      await memoWebSocketService.updateMemo(this.wsMemoId, {
+        content: memoData.content || '',
+        tags: memoData.tags || [],
+        tagCategory: memoData.tagCategory || 'TYPE',
+      });
+      console.log('[FlowView] WebSocket 메모 업데이트 전송');
+    } catch (error) {
+      console.error('[FlowView] WebSocket 메모 업데이트 실패:', error);
+    }
+  }
+
+  /**
+   * WebSocket 연결 해제 (저장 완료 시)
+   */
+  async disconnectMemoWebSocket() {
+    if (this.wsUpdateDebounceTimer) {
+      clearTimeout(this.wsUpdateDebounceTimer);
+      this.wsUpdateDebounceTimer = null;
+    }
+
+    if (memoWebSocketService.isConnected()) {
+      await memoWebSocketService.disconnect();
+    }
+
+    this.wsConnected = false;
+    this.wsMemoId = null;
+    console.log('[FlowView] WebSocket 연결 해제 (저장 완료)');
+  }
+
+  /**
+   * WebSocket 메모 삭제 후 연결 해제 (취소 시)
+   */
+  async cancelMemoWebSocket() {
+    if (this.wsUpdateDebounceTimer) {
+      clearTimeout(this.wsUpdateDebounceTimer);
+      this.wsUpdateDebounceTimer = null;
+    }
+
+    if (this.wsConnected && this.wsMemoId) {
+      try {
+        await memoWebSocketService.deleteMemo(this.wsMemoId);
+        console.log('[FlowView] WebSocket 메모 삭제 요청');
+      } catch (error) {
+        console.error('[FlowView] WebSocket 메모 삭제 실패:', error);
+      }
+    }
+
+    if (memoWebSocketService.isConnected()) {
+      await memoWebSocketService.disconnect();
+    }
+
+    this.wsConnected = false;
+    this.wsMemoId = null;
+    console.log('[FlowView] WebSocket 연결 해제 (취소)');
+  }
+
+  // ==================== 메모 저장/수정/취소 ====================
 
   /**
    * 메모 저장
@@ -1404,6 +1582,9 @@ class FlowView {
         };
         
         await memoService.updateMemo(this.editingMemoId, updateData);
+        
+        // WebSocket 연결 해제 (수정 완료)
+        await this.disconnectMemoWebSocket();
         
         // 수정 모드 해제
         this.editingMemoId = null;
@@ -1465,6 +1646,9 @@ class FlowView {
         
         await memoService.createMemo(createData);
         
+        // WebSocket 연결 해제 (저장 완료)
+        await this.disconnectMemoWebSocket();
+        
         // 입력 필드 초기화 (메모 입력 영역은 계속 표시)
         if (this.memoEditor) {
           this.memoEditor.clear();
@@ -1502,7 +1686,10 @@ class FlowView {
   /**
    * 메모 작성 취소 처리
    */
-  handleMemoCancel() {
+  async handleMemoCancel() {
+    // WebSocket 메모 삭제 후 연결 해제 (취소 시)
+    await this.cancelMemoWebSocket();
+    
     // 입력 필드 초기화 (이미 memo-editor에서 clear 호출됨)
     
     // 수정 모드 해제
@@ -1606,6 +1793,9 @@ class FlowView {
           this.memoEditor.container.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
         }
       }, 100);
+      
+      // WebSocket 연결 및 수정 시작
+      this.startMemoWebSocket();
     }
   }
 
@@ -1723,6 +1913,17 @@ class FlowView {
    * 컴포넌트 정리 (구독 해제 및 리소스 정리)
    */
   destroy() {
+    // WebSocket 연결 해제
+    if (this.wsUpdateDebounceTimer) {
+      clearTimeout(this.wsUpdateDebounceTimer);
+      this.wsUpdateDebounceTimer = null;
+    }
+    if (memoWebSocketService.isConnected()) {
+      memoWebSocketService.disconnect();
+    }
+    this.wsConnected = false;
+    this.wsMemoId = null;
+    
     // 모든 이벤트 구독 해제
     if (this.unsubscribers) {
       this.unsubscribers.forEach(unsubscribe => unsubscribe());

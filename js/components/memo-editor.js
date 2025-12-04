@@ -45,6 +45,7 @@ export class MemoEditor {
     this.tagCategoryAccordion = null; // Accordion 컨테이너
     this.onSave = null; // 저장 콜백
     this.onCancel = null; // 취소 콜백
+    this.onInput = null; // 입력 변경 콜백 (WebSocket 실시간 동기화용)
     
     this.init();
   }
@@ -132,6 +133,13 @@ export class MemoEditor {
         this.handleCancel();
       });
     }
+    
+    // 메모 입력 변경 이벤트 (WebSocket 실시간 동기화용)
+    if (this.memoInput) {
+      this.memoInput.addEventListener('input', () => {
+        this.handleInput();
+      });
+    }
   }
 
   /**
@@ -198,6 +206,9 @@ export class MemoEditor {
     if (chipTopic) {
       chipTopic.classList.toggle('selected');
     }
+    
+    // 태그 변경 시 onInput 콜백 호출
+    this.handleInput();
   }
 
   /**
@@ -392,6 +403,33 @@ export class MemoEditor {
    */
   setOnCancel(callback) {
     this.onCancel = callback;
+  }
+  
+  /**
+   * 입력 변경 콜백 설정 (WebSocket 실시간 동기화용)
+   * @param {Function} callback - 입력 변경 콜백 함수
+   */
+  setOnInput(callback) {
+    this.onInput = callback;
+  }
+  
+  /**
+   * 입력 변경 처리 (WebSocket 실시간 동기화용)
+   */
+  handleInput() {
+    if (this.onInput) {
+      const content = this.memoInput ? this.memoInput.value : '';
+      const pageNumber = this.memoPageInput ? parseInt(this.memoPageInput.value, 10) : null;
+      const tagCategory = this.getTagCategoryFromSelectedTags();
+      
+      const memoData = {
+        pageNumber: pageNumber,
+        content: content,
+        tags: Array.from(this.selectedTags),
+        tagCategory: tagCategory,
+      };
+      this.onInput(memoData);
+    }
   }
   
   /**

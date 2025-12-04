@@ -9,7 +9,7 @@
  * - /{roomId}/delete/memo
  */
 
-import { authService } from './auth-service.js';
+import { tokenManager } from '../utils/token-manager.js';
 
 // WebSocket 엔드포인트 설정
 const WS_CONFIG = {
@@ -76,14 +76,24 @@ class MemoWebSocketService {
     return new Promise((resolve, reject) => {
       try {
         // SockJS + STOMP 사용 (글로벌로 로드된 라이브러리 사용)
-        const socket = new SockJS(this._getWebSocketUrl().replace('ws:', 'http:').replace('wss:', 'https:'));
+        // tokenManager은 localStorage에서 access token을 읽어옵니다
+        const token = tokenManager && typeof tokenManager.getAccessToken === 'function'
+          ? tokenManager.getAccessToken()
+          : null;
+
+        // SockJS의 /info 요청은 STOMP CONNECT 이전에 발생합니다.
+        // info 요청에 토큰을 포함시키려면 SockJS 생성 URL에 쿼리파라미터로 token을 추가합니다.
+        let sockUrl = this._getWebSocketUrl().replace('ws:', 'http:').replace('wss:', 'https:');
+        if (token) {
+          sockUrl += (sockUrl.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(token);
+        }
+
+        const socket = new SockJS(sockUrl);
         this.stompClient = Stomp.over(socket);
 
         // 디버그 로그 비활성화 (필요시 활성화)
         this.stompClient.debug = null; // (msg) => console.log('[STOMP]', msg);
 
-        // 인증 토큰 헤더
-        const token = authService.getAccessToken();
         const headers = token ? { Authorization: `Bearer ${token}` } : {};
 
         this.stompClient.connect(
