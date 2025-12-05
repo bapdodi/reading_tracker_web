@@ -9,7 +9,7 @@ import { MemoCard } from '../../components/memo-card.js';
 import { MemoEditor } from '../../components/memo-editor.js';
 import { ROUTES } from '../../constants/routes.js';
 import { memoService } from '../../services/memo-service.js';
-import { memoWebSocketService } from '../../services/memo-websocket-service.js';
+import { webSocketService } from '../../services/websocket-service.js';
 import { authHelper } from '../../utils/auth-helper.js';
 import { FooterView } from '../common/footer.js';
 import { HeaderView } from '../common/header.js';
@@ -52,7 +52,9 @@ class FlowView {
     this.selectedBookId = null; // 선택된 책의 userBookId
     this.selectedBook = null; // 선택된 책 정보
     this.memos = []; // 현재 표시 중인 메모 목록
+    this.userShelfBooks = []; // 읽는 중인 책 목록 (Reading, AlmostFinished)
     this.editingMemoId = null; // 수정 중인 메모 ID
+    this.isProcessingMemoClose = false; // 메모 닫기 처리 중 여부
     this.isCalendarVisible = false; // 인라인 캘린더 표시 여부
     this.calendarYear = new Date().getFullYear();
     this.calendarMonth = new Date().getMonth() + 1; // 1-12
@@ -65,7 +67,6 @@ class FlowView {
     
     // WebSocket 실시간 동기화 상태
     this.wsConnected = false; // WebSocket 연결 상태
-    this.wsMemoId = null; // WebSocket으로 생성된 메모 ID (임시)
     this.wsUpdateDebounceTimer = null; // 업데이트 debounce 타이머
     this.wsUpdateDebounceDelay = 500; // debounce 딜레이 (ms)
     
@@ -79,6 +80,13 @@ class FlowView {
     
     // 이벤트 리스너 참조 (정리용)
     this.eventListeners = [];
+    // pending memo create data when user clicks save without selecting a book
+    this.pendingCreateMemoData = null;
+    this.waitingForCreate = false; // waiting for server create response
+
+    // bind helper
+    this.generateUUID = this.generateUUID.bind(this);
+    this.generateTempNumericId = this.generateTempNumericId.bind(this);
     
     // 날짜 변경 감지 인터벌 ID
     this.dateChangeIntervalId = null;
@@ -94,6 +102,30 @@ class FlowView {
     
     // 보호된 페이지: 인증 확인 (비동기)
     this.initAuth();
+  }
+
+  /**
+   * Generate RFC4122 v4 UUID (simple implementation)
+   * @returns {string}
+   */
+  generateUUID() {
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+      const r = Math.random() * 16 | 0;
+      const v = c === 'x' ? r : (r & 0x3 | 0x8);
+      return v.toString(16);
+    });
+  }
+
+  /**
+   * Generate an unpredictable numeric temporary id (includes decimal part)
+   * Example: 1691372345123.348957
+   * @returns {number}
+   */
+  generateTempNumericId() {
+    // Use high-resolution timestamp (ms) with extra random suffix to reduce collision chance
+    // Return an integer (no decimal) so JSON number is deserialized as Long on server
+    const suffix = Math.floor(Math.random() * 1000); // 0-999
+    return Math.floor(Date.now() * 1000) + suffix; // e.g., 169...000 + suffix
   }
 
   /**
@@ -129,7 +161,6 @@ class FlowView {
     this.memoEditor = document.getElementById('memo-editor');
     this.memoInput = document.getElementById('memo-input');
     this.tagChips = document.getElementById('tag-chips');
-    this.btnSaveMemo = document.getElementById('btn-save-memo');
     this.btnSelectBook = document.getElementById('btn-select-book');
     this.memoInputContainer = document.getElementById('memo-input-container');
     this.selectedBookInfo = document.getElementById('selected-book-info');
@@ -185,6 +216,9 @@ class FlowView {
     
     // 초기 데이터 로드
     this.loadMemoFlow();
+    
+    // FlowView 진입 시 WebSocket 연결
+    this.connectWebSocket();
     
     // 날짜 변경 감지 (1분마다 확인)
     this.startDateChangeDetection();
@@ -368,7 +402,10 @@ class FlowView {
   }
 
   /**
-   * 오늘의 흐름 로드
+   * 오늘의 흐름 로드 (WebSocket 기반, 날짜/그룹 변경 시 호출)
+   * 1) cacheUserId + date로 UserShelfBookDto 조회
+   * 2) 각 UserShelfBookDto의 cacheUserShelfBookId로 MemoDto 조회
+   * 3) getTodayFlow 형태로 변환하여 렌더링
    * @param {string} [date] - 조회할 날짜 (YYYY-MM-DD, 기본값: 현재 날짜)
    * @param {string} [grouping] - 그룹화 방식 (SESSION, BOOK, TAG, 기본값: this.currentGrouping)
    */
@@ -379,54 +416,50 @@ class FlowView {
     const targetDate = date || this.currentDate;
     const targetGrouping = grouping || this.currentGrouping;
     
+    // 상태 업데이트
+    this.currentDate = targetDate;
+    this.currentGrouping = targetGrouping;
+    
+    // 날짜 표시 업데이트
+    this.updateDateDisplay();
+    
+    // REST API로 직접 데이터 로드
+    console.log('[FlowView] REST API로 메모 로드');
+    await this.loadMemoFlowViaREST(targetDate, targetGrouping);
+  }
+  
+  /**
+   * REST API 기반 메모 로드 (폴백용)
+   */
+  async loadMemoFlowViaREST(targetDate, targetGrouping) {
     try {
       const params = {
         date: targetDate,
         sortBy: targetGrouping,
       };
       
-      // TAG 모드일 때만 tagCategory 추가 (SESSION 모드에서는 전달하지 않음)
       if (targetGrouping === 'TAG') {
         params.tagCategory = this.currentTagCategory;
       }
       
+      console.log('[FlowView] REST API 메모 로드:', params);
       const response = await memoService.getTodayFlow(params);
-      
-      this.currentDate = targetDate;
-      this.currentGrouping = targetGrouping;
-      
-      // 날짜 표시 업데이트
-      this.updateDateDisplay();
-      
-      // 메모 렌더링
       this.renderMemos(response);
       
     } catch (error) {
-      console.error('오늘의 흐름 로드 오류:', error);
+      console.error('[FlowView] REST API 메모 로드 오류:', error);
       
-      // 403 또는 404 에러는 메모가 없는 것으로 간주 (정상적인 상태)
-      // 메모가 없을 때는 빈 상태를 표시하고 메모 작성 UI를 활성화
-      if (error.status === 403 || error.status === 404 || error.statusCode === 403 || error.statusCode === 404 ||
-          (error.message && (error.message.includes('403') || error.message.includes('404') || error.message.includes('Forbidden')))) {
-        // 선택된 책이 있으면 빈 섹션 생성 및 메모 작성 UI 표시
-        if (this.selectedBookId && this.selectedBook) {
-          // 빈 메모 목록으로 renderMemos 호출하여 메모 작성 UI 표시
-          this.renderMemos({ 
-            memosByBook: {},
-            memosByTag: {},
-            totalMemoCount: 0
-          });
-        } else {
-          this.showEmptyState();
-          // 메모 작성 UI 숨김 (책 선택 버튼 표시)
-          if (this.memoInputContainer) {
-            this.memoInputContainer.style.display = 'none';
-          }
-        }
+      if (this.selectedBookId && this.selectedBook) {
+        this.renderMemos({ 
+          memosByBook: {},
+          memosByTag: {},
+          totalMemoCount: 0
+        });
       } else {
-        // 다른 에러는 사용자에게 알림
-        alert('메모를 불러오는 중 오류가 발생했습니다: ' + (error.message || '알 수 없는 오류'));
         this.showEmptyState();
+        if (this.memoInputContainer) {
+          this.memoInputContainer.style.display = 'none';
+        }
       }
     } finally {
       this.setLoading(false);
@@ -1389,8 +1422,64 @@ class FlowView {
     this.currentPage = 999; // 마지막 페이지로 이동하도록 표시
     await this.loadMemoFlow();
     
-    // WebSocket 연결 및 메모 작성 시작
-    await this.startMemoWebSocket();
+    // 메모 로드 후 선택된 책에 대한 메모 에디터 표시 보장
+    // (다른 책의 메모만 있을 경우 선택된 책 섹션이 없을 수 있음)
+    this.restoreMemoEditor();
+    
+    // WebSocket은 이미 연결되어 있음 (FlowView 진입 시 연결)
+    console.log('[FlowView] 책 선택 완료, userBookId:', book.userBookId);
+    
+    // 책 선택 시 자동으로 빈 메모 생성 (WebSocket 기반 - 저장 버튼 없음)
+    // pendingCreateMemoData가 있으면 해당 데이터로 생성, 없으면 빈 메모 생성
+    try {
+      const createData = this.pendingCreateMemoData 
+        ? Object.assign({}, this.pendingCreateMemoData, { userBookId: this.selectedBookId })
+        : {
+            userBookId: this.selectedBookId,
+            pageNumber: 1, // 기본 페이지 번호
+            content: '', // 빈 내용으로 시작
+            tags: [],
+            tagCategory: 'TYPE',
+            memoStartTime: new Date().toISOString(),
+          };
+      
+      // assign a numeric clientTempId and an eventId to correlate server response
+      const clientTempId = this.generateTempNumericId();
+      const eventId = this.generateUUID();
+      // send clientTempId as numeric long-like value (no decimal)
+      createData.clientTempId = clientTempId;
+      // include eventId to allow server to echo it back for reliable correlation
+      createData.eventId = eventId;
+      
+      // create a temp memo locally
+      const tempMemo = {
+        id: clientTempId,
+        cacheMemoId: clientTempId,
+        userBookId: this.selectedBookId,
+        pageNumber: createData.pageNumber,
+        content: createData.content,
+        tags: createData.tags || [],
+        memoStartTime: createData.memoStartTime || new Date().toISOString(),
+        createdAt: new Date().toISOString(),
+        bookTitle: this.selectedBook?.title || ''
+      };
+      // mark as optimistic local-only memo so it won't render as a card
+      tempMemo.__isTemp = true;
+      this.memos.push(tempMemo);
+      
+      // mark that we are waiting for the server's create response
+      this.pendingCreateMemoData = Object.assign({}, createData, { eventId });
+      this.waitingForCreate = true;
+
+      await webSocketService.createMemo(createData);
+      // do NOT clear pending here; wait for memo:create event to match and clear
+    } catch (err) {
+      console.error('[FlowView] 책 선택 후 메모 생성 실패:', err);
+      alert('선택한 책으로 메모를 생성하는 동안 오류가 발생했습니다: ' + (err.message || err));
+      // reset pending flags on error
+      this.pendingCreateMemoData = null;
+      this.waitingForCreate = false;
+    }
   }
 
   // ==================== WebSocket 실시간 동기화 ====================
@@ -1399,71 +1488,379 @@ class FlowView {
    * WebSocket 이벤트 리스너 설정
    */
   setupWebSocketListeners() {
-    // 메모 생성 응답
-    memoWebSocketService.on('memo:create', (response) => {
+    // ===== 메모 WebSocket 이벤트 =====
+    // 메모 생성 응답 - 로컬에 추가하고, pending create가 있으면 즉시 편집 모드로 전환
+    webSocketService.on('memo:create', (response) => {
       console.log('[FlowView] WebSocket memo:create 응답:', response);
-      if (response && response.memoId) {
-        this.wsMemoId = response.memoId;
+
+      // If the server echoed an eventId that matches our pending create, mark as self-originated
+      const responseEventId = response?.eventId || response?.data?.eventId;
+      const isSelfCreate = !!(responseEventId && this.pendingCreateMemoData && this.pendingCreateMemoData.eventId === responseEventId);
+
+      const memoDtos = response?.memoDtos || response?.data?.memoDtos || [];
+      if (!Array.isArray(memoDtos) || memoDtos.length === 0) {
+        console.warn('[FlowView] memo:create: 페이로드가 예상과 다릅니다.', response);
+        return;
+      }
+
+      // Map DTOs to memo objects and append to local this.memos if missing
+      const createdIds = [];
+      const clientTempToServer = {}; // map clientTempId -> server id
+      const signatureToServer = {}; // map userBookId|page|content -> server id
+      memoDtos.forEach((dto) => {
+        const id = dto.cacheMemoId ?? dto.memoId ?? dto.id;
+        const clientTempId = dto.clientTempId ?? dto.clientTempUuid ?? dto.clientTemp ?? dto.cacheMemoId;
+        const userBookId = dto.cacheUserShelfBookId ?? dto.userBookId ?? dto.userBookIdRaw;
+        const tags = dto.cacheTagIds ?? dto.tags ?? [];
+        // build signature and mapping for fallback matching
+        try {
+          const sig = `${String(userBookId)}|${String(dto.pageNumber)}|${String(dto.content || '')}`;
+          if (id !== undefined && id !== null) signatureToServer[sig] = id;
+        } catch (e) {
+          // ignore
+        }
+        // map clientTempId to server id when available
+        if (clientTempId !== undefined && clientTempId !== null) {
+          clientTempToServer[String(clientTempId)] = id;
+        }
+        const memoObj = {
+          id,
+          userBookId,
+          pageNumber: dto.pageNumber,
+          content: dto.content,
+          tags,
+          memoStartTime: dto.memoStartTime,
+          createdAt: dto.createdAt,
+          updatedAt: dto.updatedAt,
+          bookTitle: dto.bookTitle || dto.bookName || ''
+        };
+
+        // If this response corresponds to a create we initiated, prefer to merge with our optimistic temp
+        if (isSelfCreate) {
+          // Try matching by echoed clientTempId first
+          let tempIndex = -1;
+          if (clientTempId) {
+            tempIndex = this.memos.findIndex(m => String(m.id) === String(clientTempId) || String(m.cacheMemoId) === String(clientTempId) || String(m.clientTempId) === String(clientTempId));
+          }
+
+          // Fallback: match any optimistic temp memo for the same userBookId + pageNumber + empty content
+          if (tempIndex === -1) {
+            tempIndex = this.memos.findIndex(m => m.__isTemp && String(m.userBookId) === String(userBookId) && String(m.pageNumber) === String(dto.pageNumber));
+          }
+
+          if (tempIndex !== -1) {
+            const existingTemp = this.memos[tempIndex];
+            memoObj.id = id;
+            memoObj.createdAt = dto.createdAt || existingTemp.createdAt || memoObj.createdAt;
+            // remove temp flag
+            memoObj.__isTemp = false;
+            this.memos[tempIndex] = Object.assign({}, existingTemp, memoObj);
+          } else {
+            // If no temp found, behave as usual and avoid duplicates
+            const exists = this.memos.find(m => String(m.id) === String(id) || String(m.memoId) === String(id) || String(m.cacheMemoId) === String(id));
+            if (!exists) this.memos.push(memoObj);
+          }
+        } else {
+          // add if not exists (response from other clients)
+          const exists = this.memos.find(m => String(m.id) === String(id) || String(m.memoId) === String(id) || String(m.cacheMemoId) === String(id));
+          if (!exists) this.memos.push(memoObj);
+        }
+        createdIds.push(String(id));
+      });
+
+      // Re-render memos from local cache (avoid REST call)
+      const memosByBook = {};
+      this.memos.forEach((m) => {
+        const bookId = m.userBookId ?? m.bookId ?? 'unknown';
+        if (!memosByBook[bookId]) {
+          memosByBook[bookId] = { bookId: bookId, bookTitle: m.bookTitle ?? '', memos: [] };
+        }
+        memosByBook[bookId].memos.push(m);
+      });
+
+      const renderResponse = {
+        memosByBook: Object.fromEntries(Object.entries(memosByBook).map(([k, v]) => [k, { bookId: v.bookId, bookTitle: v.bookTitle, memos: v.memos }])),
+        memosByTag: {},
+        totalMemoCount: this.memos.length,
+      };
+
+      // Ensure we show last page where new memo likely lives
+      this.currentPage = 999;
+      this.renderMemos(renderResponse);
+
+      // If we are waiting for a pending create, try to match and enter edit mode
+      if (this.waitingForCreate && this.pendingCreateMemoData) {
+        // Try to find the created memo by matching userBookId + pageNumber + content + memoStartTime
+        // Prefer matching by clientTempId (server echoed). If not present, fallback to content+page match.
+        const clientTemp = this.pendingCreateMemoData.clientTempId;
+        let match = null;
+        if (clientTemp) {
+          match = this.memos.find(m => String(m.id) === String(clientTemp) || String(m.cacheMemoId) === String(clientTemp));
+        }
+        if (!match) {
+          match = this.memos.find(m => {
+            const idStr = String(m.id ?? m.memoId ?? m.cacheMemoId ?? '');
+            if (!idStr) return false;
+            const matchUserBook = String(m.userBookId) === String(this.selectedBookId);
+            const matchPage = (m.pageNumber == this.pendingCreateMemoData.pageNumber);
+            const matchContent = String(m.content || '') === String(this.pendingCreateMemoData.content || '');
+            return matchUserBook && matchPage && matchContent;
+          });
+        }
+
+        if (match) {
+          // determine server-assigned id for this created memo
+          let serverId = null;
+          if (clientTemp && clientTempToServer && clientTempToServer[String(clientTemp)] !== undefined) {
+            serverId = clientTempToServer[String(clientTemp)];
+          }
+          if (!serverId) {
+            const sig = `${String(this.selectedBookId)}|${String(this.pendingCreateMemoData.pageNumber)}|${String(this.pendingCreateMemoData.content || '')}`;
+            if (signatureToServer && signatureToServer[sig] !== undefined) serverId = signatureToServer[sig];
+          }
+
+          // If we found a serverId, update the matched memo object's id fields to the serverId
+          if (serverId !== null && serverId !== undefined) {
+            console.log('[FlowView] 생성된 메모 서버 ID 매칭됨:', serverId, '기존 임시 ID:', match.id ?? match.cacheMemoId);
+            // update in-place
+            match.id = serverId;
+            match.cacheMemoId = serverId;
+            // ensure internal this.memos reflects change
+            const idx = this.memos.findIndex(m => (String(m.id) === String(serverId) || String(m.cacheMemoId) === String(serverId)));
+            if (idx !== -1) this.memos[idx] = match;
+            this.editingMemoId = serverId;
+          } else {
+            const newId = match.id ?? match.memoId ?? match.cacheMemoId;
+            console.log('[FlowView] 생성된 메모을 찾음(서버ID 없음), 편집 모드 진입, memoId:', newId);
+            this.editingMemoId = newId;
+          }
+          // ensure selectedBookId is set
+          this.selectedBookId = match.userBookId;
+          // place editor into the section and set data
+          this.restoreMemoEditor();
+          const idToEdit = this.editingMemoId;
+          this.handleMemoEdit(idToEdit);
+
+          // clear pending flags
+          this.pendingCreateMemoData = null;
+          this.waitingForCreate = false;
+        } else {
+          console.log('[FlowView] 생성된 메모를 아직 찾지 못했습니다. 대기 상태 유지.');
+        }
       }
     });
 
-    // 메모 업데이트 응답
-    memoWebSocketService.on('memo:update', (response) => {
+    // 메모 업데이트 응답 - 부분 갱신 처리 (REST 재요청 방지)
+    webSocketService.on('memo:update', (response) => {
       console.log('[FlowView] WebSocket memo:update 응답:', response);
+
+      // 예상되는 형태: { memoDtos: [ { cacheMemoId, cacheUserShelfBookId, pageNumber, content, cacheTagIds, memoStartTime, createdAt, updatedAt } ] }
+      const memoDtos = response?.memoDtos || response?.data?.memoDtos || [];
+
+      if (!Array.isArray(memoDtos) || memoDtos.length === 0) {
+        // 페이로드가 예상과 다르면 안전하게 전체 재로딩 (예외적 상황)
+        console.warn('[FlowView] memo:update: 예기치 않은 페이로드, 전체 재로드 수행');
+        this.loadMemoFlow();
+        return;
+      }
+
+      // Helper: map incoming DTO -> UI memo object
+      const mapDtoToMemo = (dto) => {
+        const id = dto.cacheMemoId ?? dto.memoId ?? dto.id;
+        const userBookId = dto.cacheUserShelfBookId ?? dto.userBookId ?? dto.userBookIdRaw;
+        const tags = dto.cacheTagIds ?? dto.tags ?? [];
+        return {
+          id,
+          userBookId,
+          pageNumber: dto.pageNumber,
+          content: dto.content,
+          tags,
+          memoStartTime: dto.memoStartTime,
+          createdAt: dto.createdAt,
+          updatedAt: dto.updatedAt,
+        };
+      };
+
+      // Flag: whether any update targets the memo currently being edited
+      let touchedEditingMemo = false;
+
+      // Apply updates to this.memos (in-place) or insert if missing
+      memoDtos.forEach((dto) => {
+        const updated = mapDtoToMemo(dto);
+
+        // If this update is for the memo currently being edited, apply it directly to the editor
+        if (this.editingMemoId && String(this.editingMemoId) === String(updated.id)) {
+          touchedEditingMemo = true;
+
+          // Update editor fields in-place without re-rendering the whole list
+          if (this.memoEditor && typeof this.memoEditor.setMemoData === 'function') {
+            const memoData = {
+              pageNumber: updated.pageNumber,
+              content: updated.content,
+              tags: Array.isArray(updated.tags) ? updated.tags.map(t => (typeof t === 'string' ? t : t.code)) : [],
+            };
+            try {
+              this.memoEditor.setMemoData(memoData);
+              console.log('[FlowView] Editing memo updated in-place via WebSocket, memoId:', updated.id);
+            } catch (err) {
+              console.warn('[FlowView] Failed to apply update to editor:', err);
+            }
+          }
+        }
+
+        // Attempt to find existing memo by several id keys
+        const existing = this.memos.find(m => {
+          return String(m.id) === String(updated.id) || String(m.memoId) === String(updated.id) || String(m.cacheMemoId) === String(updated.id);
+        });
+
+        if (existing) {
+          // Merge fields
+          Object.assign(existing, updated);
+        } else {
+          // Try to enrich bookTitle from cached userShelfBooks if possible
+          const book = (this.userShelfBooks || []).find(b => String(b.cacheUserShelfBookId ?? b.userBookId) === String(updated.userBookId));
+          if (book) {
+            updated.bookTitle = book.title ?? book.bookTitle;
+          }
+          this.memos.push(updated);
+        }
+      });
+
+      // If the currently editing memo was touched, avoid a full re-render to keep the editor in-place
+      if (touchedEditingMemo) {
+        // We already updated the editor and internal this.memos entries; nothing more to do.
+        return;
+      }
+
+      // Otherwise rebuild memosByBook structure for renderMemos and re-render
+      const memosByBook = {};
+      this.memos.forEach((m) => {
+        const bookId = m.userBookId ?? m.bookId ?? 'unknown';
+        if (!memosByBook[bookId]) {
+          memosByBook[bookId] = {
+            book: { userBookId: bookId, title: m.bookTitle ?? '' },
+            memos: []
+          };
+        }
+        memosByBook[bookId].memos.push(m);
+      });
+
+      const renderResponse = {
+        memosByBook: Object.fromEntries(Object.entries(memosByBook).map(([k, v]) => [k, { bookId: v.book.userBookId, bookTitle: v.book.title, memos: v.memos } ])),
+        memosByTag: {},
+        totalMemoCount: this.memos.length
+      };
+
+      // 재렌더링 (부분 갱신 대신 안전하게 전체 렌더)
+      this.renderMemos(renderResponse);
     });
 
-    // 메모 삭제 응답
-    memoWebSocketService.on('memo:delete', (response) => {
+    // 메모 삭제 응답 - REST로 전체 재로딩하지 않고 로컬에서 제거 후 재렌더
+    webSocketService.on('memo:delete', (response) => {
       console.log('[FlowView] WebSocket memo:delete 응답:', response);
+
+      // Extract deleted memo ids from various possible payload shapes
+      const deletedIds = [];
+      const pushId = (v) => { if (v !== undefined && v !== null) deletedIds.push(String(v)); };
+
+      try {
+        if (Array.isArray(response?.memoDtos)) {
+          response.memoDtos.forEach(dto => pushId(dto.cacheMemoId ?? dto.memoId ?? dto.id));
+        } else if (response?.memoId) {
+          pushId(response.memoId);
+        } else if (response?.data) {
+          const d = response.data;
+          if (Array.isArray(d?.memoDtos)) d.memoDtos.forEach(dto => pushId(dto.cacheMemoId ?? dto.memoId ?? dto.id));
+          else if (d?.memoId) pushId(d.memoId);
+        }
+      } catch (e) {
+        console.warn('[FlowView] memo:delete - 페이로드 파싱 실패, 응답:', response, e);
+      }
+
+      if (deletedIds.length === 0) {
+        // If we couldn't determine deleted ids, avoid triggering REST reload per request.
+        console.warn('[FlowView] memo:delete - 삭제된 메모 ID를 파악할 수 없습니다. REST 재로드를 생략합니다.');
+        return;
+      }
+
+      // Remove deleted memos from local cache
+      const beforeCount = this.memos.length;
+      this.memos = this.memos.filter(m => {
+        const idVals = [m.id, m.memoId, m.cacheMemoId].map(v => v === undefined || v === null ? '' : String(v));
+        return !deletedIds.some(del => idVals.includes(del));
+      });
+      const afterCount = this.memos.length;
+      console.log('[FlowView] 로컬 메모 목록에서 삭제 반영:', beforeCount, '->', afterCount);
+
+      // Rebuild memosByBook structure and re-render (avoid REST)
+      const memosByBook = {};
+      this.memos.forEach((m) => {
+        const bookId = m.userBookId ?? m.bookId ?? 'unknown';
+        if (!memosByBook[bookId]) {
+          memosByBook[bookId] = { bookId: bookId, bookTitle: m.bookTitle ?? '', memos: [] };
+        }
+        memosByBook[bookId].memos.push(m);
+      });
+
+      const renderResponse = {
+        memosByBook: Object.fromEntries(Object.entries(memosByBook).map(([k, v]) => [k, { bookId: v.bookId, bookTitle: v.bookTitle, memos: v.memos }])),
+        memosByTag: {},
+        totalMemoCount: this.memos.length,
+      };
+
+      this.renderMemos(renderResponse);
+    });
+
+    // ===== 도서(UserShelfBook) WebSocket 이벤트 =====
+    // 도서 생성 응답
+    webSocketService.on('book:create', (response) => {
+      console.log('[FlowView] WebSocket book:create 응답:', response);
+    });
+
+    // 도서 업데이트 응답 (책 덮기 등)
+    webSocketService.on('book:update', (response) => {
+      console.log('[FlowView] WebSocket book:update 응답:', response);
+    });
+
+    // 도서 삭제 응답
+    webSocketService.on('book:delete', (response) => {
+      console.log('[FlowView] WebSocket book:delete 응답:', response);
     });
 
     // 연결 상태 변경
-    memoWebSocketService.on('connectionStateChange', ({ state }) => {
+    webSocketService.on('connectionStateChange', ({ state }) => {
       console.log('[FlowView] WebSocket 연결 상태:', state);
       this.wsConnected = (state === 'CONNECTED');
     });
 
     // 에러 처리
-    memoWebSocketService.on('error', (error) => {
+    webSocketService.on('error', (error) => {
       console.error('[FlowView] WebSocket 에러:', error);
     });
   }
 
   /**
-   * WebSocket 연결 및 메모 생성 시작
-   * 메모 작성을 시작할 때 호출
+   * WebSocket 연결 (FlowView 진입 시 호출)
+   * 연결 완료 후 loadMemoFlow에서 WebSocket으로 데이터 로드
    */
-  async startMemoWebSocket() {
-    if (!this.selectedBookId) {
-      console.warn('[FlowView] WebSocket 시작 실패: 책이 선택되지 않음');
-      return;
-    }
-
+  async connectWebSocket() {
     try {
       // 사용자 ID를 roomId로 사용 (authHelper에서 가져오기)
       const user = authHelper.getCurrentUser();
       const roomId = user?.id || user?.userId || 1;
 
-      // WebSocket 연결
-      await memoWebSocketService.connect(roomId);
+      // 통합 WebSocket 연결 (Book + Memo 모두 하나의 연결로 처리)
+      await webSocketService.connect(roomId);
       this.wsConnected = true;
+      console.log('[FlowView] WebSocket 연결 완료, roomId:', roomId);
 
-      // 초기 메모 생성 요청
-      const now = new Date();
-      const memoStartTime = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}T${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
+      // WebSocket 연결 후 메모 다시 로드 (WebSocket 기반)
+      await this.loadMemoFlow();
 
-      await memoWebSocketService.createMemo({
-        userBookId: this.selectedBookId,
-        content: '', // 초기 빈 내용
-        pageNumber: 1, // 기본 페이지 번호
-        tags: [],
-        memoStartTime: memoStartTime,
-      });
-
-      console.log('[FlowView] WebSocket 메모 작성 시작');
     } catch (error) {
       console.error('[FlowView] WebSocket 연결 실패:', error);
       this.wsConnected = false;
+      // 연결 실패해도 loadMemoFlow에서 REST 폴백 처리
     }
   }
 
@@ -1472,7 +1869,7 @@ class FlowView {
    * @param {Object} memoData - 메모 에디터에서 전달된 메모 데이터
    */
   handleMemoInput(memoData) {
-    // WebSocket 연결 안 되어 있으면 스킵 (연결은 책 선택/수정 진입 시 수행)
+    // WebSocket 연결 안 되어 있으면 스킵
     if (!this.wsConnected) {
       return;
     }
@@ -1488,245 +1885,361 @@ class FlowView {
   }
 
   /**
-   * WebSocket으로 메모 업데이트 전송
+   * WebSocket으로 메모 업데이트 전송 (수정 모드에서만 사용)
    * @param {Object} memoData - 메모 데이터
    */
   async sendMemoUpdate(memoData) {
-    if (!this.wsConnected || !this.wsMemoId) {
-      console.warn('[FlowView] WebSocket 업데이트 스킵: 연결 안 됨 또는 memoId 없음');
+    // 수정 모드가 아니거나 WebSocket 연결 안 되어 있으면 스킵
+    if (!this.wsConnected || !this.editingMemoId) {
       return;
     }
 
     try {
-      await memoWebSocketService.updateMemo(this.wsMemoId, {
+      await webSocketService.updateMemo(this.editingMemoId, {
         content: memoData.content || '',
         tags: memoData.tags || [],
         tagCategory: memoData.tagCategory || 'TYPE',
       });
-      console.log('[FlowView] WebSocket 메모 업데이트 전송');
+      console.log('[FlowView] WebSocket 메모 업데이트 전송, memoId:', this.editingMemoId);
     } catch (error) {
       console.error('[FlowView] WebSocket 메모 업데이트 실패:', error);
     }
   }
 
   /**
-   * WebSocket 연결 해제 (저장 완료 시)
+   * debounce 타이머 정리 (저장 완료 시)
    */
-  async disconnectMemoWebSocket() {
+  clearWebSocketDebounce() {
     if (this.wsUpdateDebounceTimer) {
       clearTimeout(this.wsUpdateDebounceTimer);
       this.wsUpdateDebounceTimer = null;
     }
-
-    if (memoWebSocketService.isConnected()) {
-      await memoWebSocketService.disconnect();
-    }
-
-    this.wsConnected = false;
-    this.wsMemoId = null;
-    console.log('[FlowView] WebSocket 연결 해제 (저장 완료)');
+    console.log('[FlowView] WebSocket debounce 타이머 정리');
   }
 
   /**
-   * WebSocket 메모 삭제 후 연결 해제 (취소 시)
+   * debounce 타이머 정리 (취소 시)
    */
-  async cancelMemoWebSocket() {
+  cancelWebSocketDebounce() {
     if (this.wsUpdateDebounceTimer) {
       clearTimeout(this.wsUpdateDebounceTimer);
       this.wsUpdateDebounceTimer = null;
     }
-
-    if (this.wsConnected && this.wsMemoId) {
-      try {
-        await memoWebSocketService.deleteMemo(this.wsMemoId);
-        console.log('[FlowView] WebSocket 메모 삭제 요청');
-      } catch (error) {
-        console.error('[FlowView] WebSocket 메모 삭제 실패:', error);
-      }
-    }
-
-    if (memoWebSocketService.isConnected()) {
-      await memoWebSocketService.disconnect();
-    }
-
-    this.wsConnected = false;
-    this.wsMemoId = null;
-    console.log('[FlowView] WebSocket 연결 해제 (취소)');
+    console.log('[FlowView] WebSocket debounce 타이머 정리 (취소)');
   }
 
   // ==================== 메모 저장/수정/취소 ====================
 
-  /**
-   * 메모 저장
-   * @param {Object} memoData - 메모 에디터에서 전달된 메모 데이터
-   */
-  async handleMemoSave(memoData) {
-    if (!this.selectedBookId) {
-      alert('책을 먼저 선택해주세요.');
-      return;
-    }
-    
-    if (!memoData || !memoData.content) {
-      alert('메모 내용을 입력해주세요.');
-      return;
-    }
-    
-    try {
-      // 수정 모드인지 확인
-      if (this.editingMemoId) {
-        // 메모 수정
-        const updateData = {
-          content: memoData.content,
-          tags: memoData.tags || [],
-          tagCategory: memoData.tagCategory || 'TYPE', // 태그 대분류 (기본값: TYPE)
-        };
-        
-        await memoService.updateMemo(this.editingMemoId, updateData);
-        
-        // WebSocket 연결 해제 (수정 완료)
-        await this.disconnectMemoWebSocket();
-        
-        // 수정 모드 해제
-        this.editingMemoId = null;
-        
-        // 페이지 번호 입력 필드 활성화
-        if (this.memoEditor && this.memoEditor.memoPageInput) {
-          this.memoEditor.memoPageInput.disabled = false;
-          this.memoEditor.memoPageInput.title = '';
-        }
-        
-        // 저장 버튼 텍스트 원래대로 변경
-        if (this.memoEditor && this.memoEditor.btnSaveMemo) {
-          this.memoEditor.btnSaveMemo.textContent = '저장';
-        }
-        
-        // 입력 필드 초기화
-        if (this.memoEditor) {
-          this.memoEditor.clear();
-        }
-        
-        // 메모 다시 로드
-        await this.loadMemoFlow();
-        
-        // 메모 수정 완료 후 메모 작성 UI 숨김
-        this.hideMemoEditor();
-      } else {
-        // 메모 작성
-        // 날짜 검증: 오늘 날짜인지 확인
-        const today = new Date().toISOString().split('T')[0];
-        if (this.currentDate !== today) {
-          alert('메모는 오늘 날짜에만 작성할 수 있습니다.');
-          return;
-        }
-        
-        // pageNumber는 사용자가 입력한 값을 사용
-        if (!memoData.pageNumber || memoData.pageNumber < 1) {
-          alert('페이지 번호를 입력해주세요. (1 이상의 숫자)');
-          return;
-        }
-        
-        const createData = {
-          userBookId: this.selectedBookId,
-          pageNumber: memoData.pageNumber,
-          content: memoData.content,
-          tags: memoData.tags || [],
-          tagCategory: memoData.tagCategory || 'TYPE', // 태그 대분류 (기본값: TYPE)
-          // 한국 시간대 기준으로 ISO 문자열 생성 (타임존 정보 없이)
-          memoStartTime: (() => {
-            const now = new Date(); // 브라우저가 한국 시간대면 한국 시간
-            const year = now.getFullYear();
-            const month = String(now.getMonth() + 1).padStart(2, '0');
-            const day = String(now.getDate()).padStart(2, '0');
-            const hours = String(now.getHours()).padStart(2, '0');
-            const minutes = String(now.getMinutes()).padStart(2, '0');
-            const seconds = String(now.getSeconds()).padStart(2, '0');
-            return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}`;
-          })(),
-        };
-        
-        await memoService.createMemo(createData);
-        
-        // WebSocket 연결 해제 (저장 완료)
-        await this.disconnectMemoWebSocket();
-        
-        // 입력 필드 초기화 (메모 입력 영역은 계속 표시)
-        if (this.memoEditor) {
-          this.memoEditor.clear();
-        }
-        
-        // 메모 입력 영역이 계속 표시되도록 확인
-        if (this.memoInputContainer) {
-          this.memoInputContainer.style.display = 'block';
-        }
-        
-        // 메모 저장 후 마지막 페이지로 이동하기 위해 현재 페이지를 임시로 설정
-        // (loadMemoFlow 내부에서 renderMemosByBook이 호출되고, 그 안에서 totalPages가 계산됨)
-        // 메모 저장 후에는 항상 마지막 페이지로 이동해야 하므로,
-        // loadMemoFlow 호출 전에 currentPage를 큰 값으로 설정하여
-        // renderMemosByBook에서 마지막 페이지로 조정되도록 함
-        const previousPage = this.currentPage;
-        this.currentPage = 999; // 임시로 큰 값 설정
-        
-        // 메모 다시 로드 (오래된 메모부터 상단에 표시됨)
-        await this.loadMemoFlow();
-        
-        // 입력 컴포넌트를 새로 추가된 메모 아래로 스크롤
-        if (this.memoEditor && this.memoEditor.container) {
-          setTimeout(() => {
-            this.memoEditor.container.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-          }, 100);
-        }
-      }
-    } catch (error) {
-      console.error('메모 저장/수정 오류:', error);
-      alert('메모 저장/수정 중 오류가 발생했습니다: ' + (error.message || '알 수 없는 오류'));
-    }
-  }
 
   /**
    * 메모 작성 취소 처리
    */
   async handleMemoCancel() {
-    // WebSocket 메모 삭제 후 연결 해제 (취소 시)
-    await this.cancelMemoWebSocket();
-    
-    // 입력 필드 초기화 (이미 memo-editor에서 clear 호출됨)
-    
-    // 수정 모드 해제
-    if (this.editingMemoId) {
+    // 중복 실행 방지
+    if (this.isProcessingMemoClose) return;
+    this.isProcessingMemoClose = true;
+
+    // 닫기 버튼 동작: 사용자가 작성한 내용이 있으면 저장 동작을 수행하고,
+    // 내용이 없으면 단순히 에디터를 닫는다.
+    try {
+      if (!this.memoEditor) {
+        return;
+      }
+
+      const content = this.memoEditor.memoInput ? this.memoEditor.memoInput.value.trim() : '';
+      const pageNumberRaw = this.memoEditor.memoPageInput ? this.memoEditor.memoPageInput.value : null;
+      const pageNumber = pageNumberRaw ? parseInt(pageNumberRaw, 10) : null;
+      const tags = this.memoEditor.selectedTags ? Array.from(this.memoEditor.selectedTags) : [];
+      const tagCategory = this.memoEditor.getTagCategoryFromSelectedTags ? this.memoEditor.getTagCategoryFromSelectedTags() : 'TYPE';
+
+      // No content -> just close
+      if (!content) {
+        // perform hide flow below
+      } else {
+        // If editing existing memo -> update, else -> create
+        if (this.editingMemoId) {
+          // Send update
+          await webSocketService.updateMemo(this.editingMemoId, {
+            content: content,
+            tags: tags || [],
+            tagCategory: tagCategory || 'TYPE'
+          });
+
+          // clear debounce
+          this.clearWebSocketDebounce();
+
+          // Optimistically update local model so UI shows edited text immediately
+          const updatedObj = {
+            id: this.editingMemoId,
+            content: content,
+            pageNumber: pageNumber,
+            tags: tags || [],
+            updatedAt: (new Date()).toISOString()
+          };
+          console.log('[FlowView] 닫기 - 업데이트할 내용:', updatedObj);
+          
+          // this.memos도 업데이트 (다음 렌더링을 위해)
+          const existing = this.memos.find(m => String(m.id) === String(this.editingMemoId) || String(m.memoId) === String(this.editingMemoId) || String(m.cacheMemoId) === String(this.editingMemoId));
+          if (existing) {
+            Object.assign(existing, updatedObj);
+          }
+
+          // 저장할 editingMemoId를 미리 캡처
+          const savedMemoId = this.editingMemoId;
+
+          // exit edit mode (moved to finally)
+          // this.editingMemoId = null;
+          if (this.memoEditor && this.memoEditor.memoPageInput) {
+            this.memoEditor.memoPageInput.disabled = false;
+            this.memoEditor.memoPageInput.title = '';
+          }
+          if (this.memoEditor && this.memoEditor.btnCloseMemo) {
+            this.memoEditor.btnCloseMemo.textContent = '닫기';
+          }
+
+          // clear editor fields
+          this.memoEditor.clear();
+          
+          // 에디터를 먼저 숨기고 나서 DOM 업데이트
+          if (this.memoEditor && this.memoEditor.container) {
+            const editorParent = this.memoEditor.container.parentNode;
+            if (editorParent && (editorParent === this.memoList || this.memoList.contains(editorParent))) {
+              if (this.flowContent) {
+                this.flowContent.appendChild(this.memoEditor.container);
+              }
+              this.memoEditor.container.style.display = 'none';
+            } else {
+              this.memoEditor.container.style.display = 'none';
+            }
+          }
+          if (this.memoInputContainer) {
+            this.memoInputContainer.style.display = 'none';
+          }
+
+          // 에디터 숨긴 후 DOM에서 해당 메모 카드를 직접 업데이트
+          const memoCard = this.memoList.querySelector(`.memo-card[data-memo-id="${savedMemoId}"]`);
+          console.log('[FlowView] 닫기 - 메모 카드 찾기:', savedMemoId, memoCard ? '찾음' : '못찾음');
+          if (memoCard) {
+            const contentEl = memoCard.querySelector('.memo-card-content');
+            if (contentEl) {
+              contentEl.textContent = content;
+              console.log('[FlowView] 닫기 - DOM 직접 업데이트 완료:', content.substring(0, 30));
+            }
+            
+            // 태그도 업데이트
+            const tagsContainer = memoCard.querySelector('.memo-card-tags');
+            if (tagsContainer && tags && tags.length > 0) {
+              const tagsHtml = tags.map(tag => {
+                const tagLabel = typeof tag === 'string' ? tag : (tag.code || tag);
+                return `<span class="memo-tag">${this.escapeHtml(tagLabel)}</span>`;
+              }).join('');
+              tagsContainer.innerHTML = tagsHtml;
+            }
+          } else {
+            // 메모 카드를 찾지 못하면 MemoCard.render()로 새로 만들어서 교체
+            console.log('[FlowView] 닫기 - 메모 카드를 찾지 못함, 새로 렌더링');
+            
+            // existing 메모 객체 가져오기
+            const memoToRender = this.memos.find(m => String(m.id) === String(savedMemoId) || String(m.memoId) === String(savedMemoId) || String(m.cacheMemoId) === String(savedMemoId));
+            if (memoToRender) {
+              // 새 메모 카드 HTML 생성
+              const newCardHtml = MemoCard.render(memoToRender);
+              
+              // 해당 책 섹션의 그리드를 찾아서 기존 카드 위치에 삽입하거나 추가
+              const bookId = memoToRender.userBookId ?? memoToRender.bookId ?? 'unknown';
+              const bookSection = this.memoList.querySelector(`.memo-book-section[data-book-id="${bookId}"]`);
+              if (bookSection) {
+                const memoGrid = bookSection.querySelector('.memo-section-grid');
+                if (memoGrid) {
+                  // 기존 카드가 있으면 교체, 없으면 마지막에 추가
+                  const existingCard = memoGrid.querySelector(`.memo-card[data-memo-id="${savedMemoId}"]`);
+                  if (existingCard) {
+                    existingCard.outerHTML = newCardHtml;
+                    console.log('[FlowView] 닫기 - 기존 카드 교체 완료');
+                  } else {
+                    memoGrid.insertAdjacentHTML('beforeend', newCardHtml);
+                    console.log('[FlowView] 닫기 - 새 카드 추가 완료');
+                  }
+                }
+              }
+            }
+          }
+
+          // WebSocket memo:update 응답이 오면 자동으로 동기화됨
+          // 백그라운드 loadMemoFlow() 호출 제거 - 이전 데이터로 덮어쓰는 문제 방지
+          
+          // finally 블록에서 에디터를 다시 숨기지 않도록 플래그 설정
+          return; // finally 블록 스킵하기 위해 여기서 return
+        } else {
+          // creating new memo: validate page number
+          const today = new Date().toISOString().split('T')[0];
+          if (this.currentDate !== today) {
+            alert('메모는 오늘 날짜에만 작성할 수 있습니다. 닫기 전에 날짜를 오늘로 변경하세요.');
+            return;
+          }
+          if (!pageNumber || isNaN(pageNumber) || pageNumber < 1) {
+            alert('페이지 번호를 입력해주세요. (1 이상의 숫자)');
+            return;
+          }
+
+          const createData = {
+            userBookId: this.selectedBookId,
+            pageNumber: pageNumber,
+            content: content,
+            tags: tags || [],
+            tagCategory: tagCategory || 'TYPE',
+            memoStartTime: (() => {
+              const now = new Date();
+              const year = now.getFullYear();
+              const month = String(now.getMonth() + 1).padStart(2, '0');
+              const day = String(now.getDate()).padStart(2, '0');
+              const hours = String(now.getHours()).padStart(2, '0');
+              const minutes = String(now.getMinutes()).padStart(2, '0');
+              const seconds = String(now.getSeconds()).padStart(2, '0');
+              return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}`;
+            })(),
+          };
+
+          await webSocketService.createMemo(createData);
+          this.clearWebSocketDebounce();
+
+          // reset editor and go to last page
+          this.memoEditor.clear();
+          this.currentPage = 999;
+          await this.loadMemoFlow();
+        }
+      }
+    } catch (err) {
+      console.error('닫기(저장) 중 오류:', err);
+      alert('메모를 저장하는 동안 오류가 발생했습니다: ' + (err.message || err));
+    } finally {
+      // exit edit mode
       this.editingMemoId = null;
       
-      // 페이지 번호 입력 필드 활성화
-      if (this.memoEditor && this.memoEditor.memoPageInput) {
-        this.memoEditor.memoPageInput.disabled = false;
-        this.memoEditor.memoPageInput.title = '';
-      }
-      
-      // 저장 버튼 텍스트 원래대로 변경
-      if (this.memoEditor && this.memoEditor.btnSaveMemo) {
-        this.memoEditor.btnSaveMemo.textContent = '저장';
-      }
-    }
-    
-    // 메모 에디터 숨김 처리
-    if (this.memoEditor && this.memoEditor.container) {
-      const parent = this.memoEditor.container.parentNode;
-      
-      // 메모 섹션 내부에 있으면 flow-content로 이동하고 숨김
-      if (parent && (parent === this.memoList || this.memoList.contains(parent))) {
-        if (this.flowContent && this.memoEditor.container.parentNode !== this.flowContent) {
-          this.flowContent.appendChild(this.memoEditor.container);
+      // Always hide editor UI after attempting save/close
+      if (this.memoEditor && this.memoEditor.container) {
+        const parent = this.memoEditor.container.parentNode;
+        if (parent && (parent === this.memoList || this.memoList.contains(parent))) {
+          if (this.flowContent && this.memoEditor.container.parentNode !== this.flowContent) {
+            this.flowContent.appendChild(this.memoEditor.container);
+          }
+          this.memoEditor.container.style.display = 'none';
+        } else {
+          this.memoEditor.container.style.display = 'none';
         }
-        this.memoEditor.container.style.display = 'none';
-      } else {
-        // 이미 flow-content에 있으면 그냥 숨김
-        this.memoEditor.container.style.display = 'none';
       }
+      if (this.memoInputContainer) {
+        this.memoInputContainer.style.display = 'none';
+      }
+      
+      this.isProcessingMemoClose = false;
     }
-    
-    // 입력 컨테이너 숨김
-    if (this.memoInputContainer) {
-      this.memoInputContainer.style.display = 'none';
+  }
+
+  /**
+   * 메모 저장 처리 (memo-editor의 onSave 콜백으로 사용)
+   * - 편집 중이면 WebSocket으로 update 전송
+   * - 새 메모이고 책이 선택되어 있으면 바로 WebSocket으로 create 전송
+   * - 새 메모이고 책이 선택되어 있지 않으면 책 선택 모달을 열고 선택 시 생성
+   * @param {Object} memoData
+   */
+  async handleMemoSave(memoData) {
+    try {
+      const content = memoData.content ? String(memoData.content).trim() : '';
+      const pageNumber = memoData.pageNumber || (this.memoEditor && parseInt(this.memoEditor.memoPageInput?.value, 10)) || null;
+      const tags = memoData.tags || [];
+      const tagCategory = memoData.tagCategory || 'TYPE';
+
+      if (!content) {
+        alert('메모 내용을 입력해주세요.');
+        return;
+      }
+
+      // 수정 모드
+      if (this.editingMemoId) {
+        // send update via WebSocket
+        await webSocketService.updateMemo(this.editingMemoId, {
+          content,
+          tags,
+          tagCategory,
+        });
+
+        // Optimistically update local memo
+        const existing = this.memos.find(m => String(m.id) === String(this.editingMemoId) || String(m.memoId) === String(this.editingMemoId) || String(m.cacheMemoId) === String(this.editingMemoId));
+        if (existing) {
+          Object.assign(existing, { content, tags, updatedAt: (new Date()).toISOString() });
+        }
+
+        // clear edit mode and UI
+        this.editingMemoId = null;
+        if (this.memoEditor) this.memoEditor.clear();
+        if (this.memoEditor && this.memoEditor.container) {
+          if (this.flowContent && this.memoEditor.container.parentNode !== this.flowContent) {
+            this.flowContent.appendChild(this.memoEditor.container);
+          }
+          this.memoEditor.container.style.display = 'none';
+        }
+        if (this.memoInputContainer) this.memoInputContainer.style.display = 'none';
+
+        // WebSocket response handler will refresh or partially update UI
+        return;
+      }
+
+      // 새 메모 작성
+      // validate page number (only allow positive integers)
+      if (!pageNumber || isNaN(pageNumber) || pageNumber < 1) {
+        alert('페이지 번호를 입력해주세요. (1 이상의 숫자)');
+        return;
+      }
+
+      const createData = {
+        userBookId: this.selectedBookId,
+        pageNumber: pageNumber,
+        content: content,
+        tags: tags || [],
+        tagCategory: tagCategory || 'TYPE',
+        memoStartTime: new Date().toISOString(),
+      };
+
+      // If book already selected -> create immediately with optimistic clientTempId
+      if (this.selectedBookId) {
+        const clientTempId = this.generateTempNumericId();
+        // send clientTempId as numeric long-like value (no decimal)
+        createData.clientTempId = clientTempId;
+        const tempMemo = {
+          id: clientTempId,
+          cacheMemoId: clientTempId,
+          userBookId: this.selectedBookId,
+          pageNumber: createData.pageNumber,
+          content: createData.content,
+          tags: createData.tags || [],
+          memoStartTime: createData.memoStartTime,
+          createdAt: new Date().toISOString(),
+          bookTitle: this.selectedBook?.title || ''
+        };
+        this.memos.push(tempMemo);
+        this.pendingCreateMemoData = createData;
+        this.waitingForCreate = true;
+        try {
+          await webSocketService.createMemo(createData);
+        } catch (err) {
+          console.error('[FlowView] 메모 생성 실패:', err);
+          // cleanup on error
+          this.memos = this.memos.filter(m => String(m.id) !== String(clientTempId));
+          this.pendingCreateMemoData = null;
+          this.waitingForCreate = false;
+          alert('메모 생성 중 오류가 발생했습니다: ' + (err.message || err));
+        }
+        return;
+      }
+
+      // No book selected -> remember pending data and open book selector
+      this.pendingCreateMemoData = createData;
+      this.showBookSelector();
+
+    } catch (error) {
+      console.error('[FlowView] 메모 저장 실패:', error);
+      alert('메모 저장 중 오류가 발생했습니다: ' + (error.message || error));
     }
   }
   
@@ -1782,9 +2295,9 @@ class FlowView {
         this.memoEditor.memoPageInput.title = '페이지 번호는 수정할 수 없습니다.';
       }
       
-      // 저장 버튼 텍스트 변경
-      if (this.memoEditor.btnSaveMemo) {
-        this.memoEditor.btnSaveMemo.textContent = '수정 완료';
+      // 닫기 버튼 텍스트 변경 (편집 중에는 동일하게 닫기)
+      if (this.memoEditor.btnCloseMemo) {
+        this.memoEditor.btnCloseMemo.textContent = '닫기';
       }
       
       // 메모 에디터로 스크롤
@@ -1794,8 +2307,8 @@ class FlowView {
         }
       }, 100);
       
-      // WebSocket 연결 및 수정 시작
-      this.startMemoWebSocket();
+      // WebSocket은 이미 연결되어 있음 (FlowView 진입 시 연결)
+      console.log('[FlowView] 메모 수정 모드 진입, memoId:', memoId);
     }
   }
 
@@ -1809,10 +2322,11 @@ class FlowView {
     }
     
     try {
-      await memoService.deleteMemo(memoId);
+      // WebSocket으로 메모 삭제
+      await webSocketService.deleteMemo(memoId);
       
-      // 메모 다시 로드
-      await this.loadMemoFlow();
+      // 메모 다시 로드 (WebSocket 응답에서도 loadMemoFlow 호출됨)
+      // await this.loadMemoFlow();
       
       alert('메모가 삭제되었습니다.');
     } catch (error) {
@@ -1918,11 +2432,10 @@ class FlowView {
       clearTimeout(this.wsUpdateDebounceTimer);
       this.wsUpdateDebounceTimer = null;
     }
-    if (memoWebSocketService.isConnected()) {
-      memoWebSocketService.disconnect();
+    if (webSocketService.isConnected()) {
+      webSocketService.disconnect();
     }
     this.wsConnected = false;
-    this.wsMemoId = null;
     
     // 모든 이벤트 구독 해제
     if (this.unsubscribers) {
@@ -2232,8 +2745,14 @@ class FlowView {
         requestData.review = this.closeBookReview?.value || null;
       }
       
-      // API 호출
-      await memoService.closeBook(this.selectedBookId, requestData);
+      // WebSocket으로 책 업데이트 (책 덮기)
+      await webSocketService.updateUserShelfBook(this.selectedBookId, {
+        readingProgress: lastReadPage,
+        category: isFinished ? 'Finished' : (lastReadPage > 0 ? 'Reading' : undefined),
+        readingFinishedDate: isFinished ? this.closeBookFinishedDate?.value : undefined,
+        rating: isFinished ? (parseInt(this.closeBookRating?.value) || 0) : undefined,
+        review: isFinished ? (this.closeBookReview?.value || null) : undefined,
+      });
       
       // 성공 메시지
       alert('책 덮기가 완료되었습니다.');

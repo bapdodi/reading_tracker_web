@@ -56,6 +56,11 @@ export class MemoCard {
    * @returns {string} HTML 문자열
    */
   static render(memo) {
+    // If this is an optimistic / temporary local memo, suppress rendering a card
+    // (we show an editor but avoid duplicate empty cards)
+    if (memo && (memo.__isTemp || memo.isTemp || memo.isOptimistic)) {
+      return '';
+    }
     const tagsHtml = memo.tags && memo.tags.length > 0
       ? memo.tags.map(tag => {
           const tagLabel = this.getTagLabel(tag);

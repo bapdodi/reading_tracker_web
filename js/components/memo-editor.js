@@ -64,8 +64,7 @@ export class MemoEditor {
     this.memoPageInput = this.container.querySelector('#memo-page-input');
     this.tagChipsType = this.container.querySelector('#tag-chips-type');
     this.tagChipsTopic = this.container.querySelector('#tag-chips-topic');
-    this.btnSaveMemo = this.container.querySelector('#btn-save-memo');
-    this.btnCancelMemo = this.container.querySelector('#btn-cancel-memo');
+    this.btnCloseMemo = this.container.querySelector('#btn-close-memo');
     this.tagCategoryAccordion = this.container.querySelector('#memo-tag-category-accordion');
 
     // Accordion 헤더 클릭 이벤트 위임
@@ -121,15 +120,10 @@ export class MemoEditor {
     }
 
     // 저장 버튼 이벤트
-    if (this.btnSaveMemo) {
-      this.btnSaveMemo.addEventListener('click', () => {
-        this.handleSave();
-      });
-    }
-    
-    // 취소 버튼 이벤트
-    if (this.btnCancelMemo) {
-      this.btnCancelMemo.addEventListener('click', () => {
+    // 닫기 버튼 이벤트 (저장/취소 통합)
+    if (this.btnCloseMemo) {
+      this.btnCloseMemo.addEventListener('click', () => {
+        // Close behaves like cancel (hide editor / call onCancel)
         this.handleCancel();
       });
     }
