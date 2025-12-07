@@ -1438,11 +1438,14 @@ class FlowView {
     
     // 책 선택 시 자동으로 빈 메모 생성 (WebSocket 기반 - 저장 버튼 없음)
     // pendingCreateMemoData가 있으면 해당 데이터로 생성, 없으면 빈 메모 생성
+    const currentUser = authHelper.getCurrentUser();
+    const currentUserId = currentUser?.id || currentUser?.userId;
     try {
       const createData = this.pendingCreateMemoData 
-        ? Object.assign({}, this.pendingCreateMemoData, { userBookId: this.selectedBookId })
+        ? Object.assign({}, this.pendingCreateMemoData, { userBookId: this.selectedBookId, cacheUserId: currentUserId })
         : {
             userBookId: this.selectedBookId,
+            cacheUserId: currentUserId,
             pageNumber: 1, // 기본 페이지 번호
             content: '', // 빈 내용으로 시작
             tags: [],
@@ -2100,8 +2103,10 @@ class FlowView {
             return;
           }
 
+          const userForCreate = authHelper.getCurrentUser();
           const createData = {
             userBookId: this.selectedBookId,
+            cacheUserId: userForCreate?.id || userForCreate?.userId,
             pageNumber: pageNumber,
             content: content,
             tags: tags || [],
@@ -2226,8 +2231,10 @@ class FlowView {
         return;
       }
 
+      const userForNewMemo = authHelper.getCurrentUser();
       const createData = {
         userBookId: this.selectedBookId,
+        cacheUserId: userForNewMemo?.id || userForNewMemo?.userId,
         pageNumber: pageNumber,
         content: content,
         tags: tags || [],

@@ -184,7 +184,8 @@ class WebSocketService {
       console.log(`[WS] Received ${entity}:${action}:`, body);
       
       // 엔티티별 이벤트 발생 (기존 호환성 유지)
-      const eventPrefix = entity === 'usershelfbook' ? 'book' : 'memo';
+      // Use the raw entity name as event prefix (no separate 'book' alias)
+      const eventPrefix = entity;
       this._emit(`${eventPrefix}:${action}`, body);
       
       // 공통 이벤트도 발생
@@ -295,6 +296,11 @@ class WebSocketService {
       tagCategory: memoData.tagCategory,
     };
 
+    // include cacheUserId if provided by caller (flow-view sets this)
+    if (memoData.cacheUserId !== undefined && memoData.cacheUserId !== null) {
+      dto.cacheUserId = memoData.cacheUserId;
+    }
+
     // include optional clientTempId for client-side optimistic create matching
     if (memoData.clientTempId) {
       dto.clientTempId = memoData.clientTempId;
@@ -311,6 +317,8 @@ class WebSocketService {
       request.eventId = memoData.eventId;
     }
 
+    // debug: show DTO being sent
+    if (console && console.debug) console.debug('[WS] createMemo DTO:', request);
     await this._send('memo', 'create', request);
   }
 
@@ -561,8 +569,7 @@ class WebSocketService {
 // 싱글톤 인스턴스 생성 및 export
 export const webSocketService = new WebSocketService();
 
-// 기존 호환성을 위한 alias export
-export const bookWebSocketService = webSocketService;
+// 기존 호환성: memo alias만 노출 (book alias 제거)
 export const memoWebSocketService = webSocketService;
 
 // 상수 export
