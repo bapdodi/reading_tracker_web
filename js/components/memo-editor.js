@@ -430,13 +430,34 @@ export class MemoEditor {
    * 메모 작성 취소 처리
    */
   handleCancel() {
+    console.log('[MemoEditor] handleCancel invoked, onCancel set:', !!this.onCancel);
+    try {
+      const globalInput = document.getElementById('memo-input');
+      console.log('[MemoEditor] memoInput element:', this.memoInput, 'global memo-input:', globalInput, 'equal:', this.memoInput === globalInput);
+      console.log('[MemoEditor] memoInput value length:', this.memoInput ? String(this.memoInput.value).length : 'no-input', 'document.activeElement:', document.activeElement && (document.activeElement.id || document.activeElement.tagName));
+    } catch (e) {
+      console.error('[MemoEditor] diagnostic log failed:', e);
+    }
+
+    // Build memoData snapshot BEFORE clearing the editor so consumers can read the values
+    const memoData = {
+      pageNumber: this.memoPageInput ? parseInt(this.memoPageInput.value, 10) : null,
+      content: this.memoInput ? String(this.memoInput.value) : '',
+      tags: Array.from(this.selectedTags || []),
+      tagCategory: this.getTagCategoryFromSelectedTags ? this.getTagCategoryFromSelectedTags() : 'TYPE'
+    };
+
+    // 취소 콜백 호출 (pass memoData)
+    if (this.onCancel) {
+      try {
+        this.onCancel(memoData);
+      } catch (e) {
+        console.error('[MemoEditor] onCancel callback threw:', e);
+      }
+    }
+
     // 입력 필드 초기화
     this.clear();
-    
-    // 취소 콜백 호출
-    if (this.onCancel) {
-      this.onCancel();
-    }
   }
 
   /**

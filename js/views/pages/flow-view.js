@@ -55,6 +55,7 @@ class FlowView {
     this.userShelfBooks = []; // 읽는 중인 책 목록 (Reading, AlmostFinished)
     this.editingMemoId = null; // 수정 중인 메모 ID
     this.isProcessingMemoClose = false; // 메모 닫기 처리 중 여부
+    this.suppressNextEditorInsert = false; // 일시적으로 다음 에디터 삽입을 억제
     this.isCalendarVisible = false; // 인라인 캘린더 표시 여부
     this.calendarYear = new Date().getFullYear();
     this.calendarMonth = new Date().getMonth() + 1; // 1-12
@@ -204,8 +205,8 @@ class FlowView {
     this.memoEditor.setOnSave((memoData) => {
       this.handleMemoSave(memoData);
     });
-    this.memoEditor.setOnCancel(() => {
-      this.handleMemoCancel();
+    this.memoEditor.setOnCancel((memoData) => {
+      this.handleMemoCancel(memoData);
     });
     this.memoEditor.setOnInput((memoData) => {
       this.handleMemoInput(memoData);
@@ -964,6 +965,12 @@ class FlowView {
    */
   insertMemoEditorIntoSection(sectionNode) {
     if (!this.memoEditor || !this.memoEditor.container || !sectionNode) return;
+
+    // If insertion is being suppressed (e.g., just closed), skip one insertion
+    if (this.suppressNextEditorInsert) {
+      this.suppressNextEditorInsert = false;
+      return;
+    }
 
     const memoGrid = sectionNode.querySelector('.memo-section-grid');
     if (!memoGrid) return;
@@ -1934,7 +1941,8 @@ class FlowView {
   /**
    * 메모 작성 취소 처리
    */
-  async handleMemoCancel() {
+  async handleMemoCancel(memoData) {
+    console.log('[FlowView] 메모 작성 취소 처리 시작, isProcessingMemoClose:', this.isProcessingMemoClose);
     // 중복 실행 방지
     if (this.isProcessingMemoClose) return;
     this.isProcessingMemoClose = true;
@@ -1946,9 +1954,19 @@ class FlowView {
         return;
       }
 
-      const content = this.memoEditor.memoInput ? this.memoEditor.memoInput.value.trim() : '';
-      const pageNumberRaw = this.memoEditor.memoPageInput ? this.memoEditor.memoPageInput.value : null;
-      const pageNumber = pageNumberRaw ? parseInt(pageNumberRaw, 10) : null;
+      // prefer memoData passed from MemoEditor (snapshot before clear)
+      const content = (memoData && typeof memoData.content !== 'undefined')
+        ? String(memoData.content).trim()
+        : (this.memoEditor.memoInput ? this.memoEditor.memoInput.value.trim() : '');
+
+      try {
+        const globalInput = document.getElementById('memo-input');
+        console.log('[FlowView] handleMemoCancel - content length:', content.length, 'editingMemoId:', this.editingMemoId, 'memoInput === global:', this.memoEditor.memoInput === globalInput, 'document.activeElement:', document.activeElement && (document.activeElement.id || document.activeElement.tagName));
+      } catch (e) {
+        console.error('[FlowView] diagnostic failed:', e);
+      }
+
+      const pageNumber = (memoData && typeof memoData.pageNumber !== 'undefined') ? memoData.pageNumber : (this.memoEditor.memoPageInput ? parseInt(this.memoEditor.memoPageInput.value, 10) : null);
       const tags = this.memoEditor.selectedTags ? Array.from(this.memoEditor.selectedTags) : [];
       const tagCategory = this.memoEditor.getTagCategoryFromSelectedTags ? this.memoEditor.getTagCategoryFromSelectedTags() : 'TYPE';
 
@@ -2114,10 +2132,13 @@ class FlowView {
       alert('메모를 저장하는 동안 오류가 발생했습니다: ' + (err.message || err));
     } finally {
       // exit edit mode
+      const prevEditingId = this.editingMemoId;
       this.editingMemoId = null;
       
       // Always hide editor UI after attempting save/close
       if (this.memoEditor && this.memoEditor.container) {
+        // suppress the next insertion to avoid immediately recreating the editor slot
+        this.suppressNextEditorInsert = true;
         const parent = this.memoEditor.container.parentNode;
         if (parent && (parent === this.memoList || this.memoList.contains(parent))) {
           if (this.flowContent && this.memoEditor.container.parentNode !== this.flowContent) {
@@ -2131,7 +2152,20 @@ class FlowView {
       if (this.memoInputContainer) {
         this.memoInputContainer.style.display = 'none';
       }
-      
+
+      // Restore original memo card visibility if we had hidden it on edit
+      try {
+        if (prevEditingId) {
+          const originalCard = this.memoList.querySelector(`.memo-card[data-memo-id="${prevEditingId}"]`);
+          if (originalCard && originalCard.getAttribute('data-editing-hidden') === 'true') {
+            originalCard.style.display = '';
+            originalCard.removeAttribute('data-editing-hidden');
+          }
+        }
+      } catch (e) {
+        console.warn('[FlowView] failed to restore original memo card visibility:', e);
+      }
+
       this.isProcessingMemoClose = false;
     }
   }
@@ -2281,12 +2315,29 @@ class FlowView {
       
       this.memoEditor.setMemoData(memoData);
       
-      // 메모 에디터 표시
-      if (this.memoEditor.container) {
-        this.memoEditor.container.style.display = 'block';
-      }
-      if (this.memoInputContainer) {
-        this.memoInputContainer.style.display = 'block';
+      // Place the memo editor directly under the memo card being edited
+      try {
+        const memoCard = this.memoList.querySelector(`.memo-card[data-memo-id="${memoId}"]`);
+        if (memoCard && this.memoEditor && this.memoEditor.container) {
+          // Insert editor container immediately after the memo card
+          const parent = memoCard.parentNode;
+          parent.insertBefore(this.memoEditor.container, memoCard.nextSibling);
+          this.memoEditor.container.style.display = 'block';
+        } else if (this.memoEditor && this.memoEditor.container) {
+          // Fallback: just show the editor where it currently is
+          this.memoEditor.container.style.display = 'block';
+        }
+        if (this.memoInputContainer) {
+          this.memoInputContainer.style.display = 'block';
+        }
+      } catch (e) {
+        console.warn('[FlowView] failed to position memo editor under card:', e);
+        if (this.memoEditor && this.memoEditor.container) {
+          this.memoEditor.container.style.display = 'block';
+        }
+        if (this.memoInputContainer) {
+          this.memoInputContainer.style.display = 'block';
+        }
       }
       
       // 페이지 번호 입력 필드 비활성화 (수정 불가)
@@ -2298,6 +2349,18 @@ class FlowView {
       // 닫기 버튼 텍스트 변경 (편집 중에는 동일하게 닫기)
       if (this.memoEditor.btnCloseMemo) {
         this.memoEditor.btnCloseMemo.textContent = '닫기';
+      }
+
+      // Hide the original memo card while editing so it doesn't appear duplicated
+      try {
+        const memoCard = this.memoList.querySelector(`.memo-card[data-memo-id="${memoId}"]`);
+        if (memoCard) {
+          memoCard.style.display = 'none';
+          // mark it so we can restore later
+          memoCard.setAttribute('data-editing-hidden', 'true');
+        }
+      } catch (e) {
+        console.warn('[FlowView] failed to hide original memo card for edit:', e);
       }
       
       // 메모 에디터로 스크롤
