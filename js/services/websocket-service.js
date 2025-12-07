@@ -82,9 +82,12 @@ class WebSocketService {
           ? tokenManager.getAccessToken()
           : null;
 
-        // Build SockJS URL (do NOT include token in query string for security)
-        // Token will be sent in the STOMP CONNECT headers below as `Authorization: Bearer <token>`.
-        const sockUrl = this._getWebSocketUrl().replace('ws:', 'http:').replace('wss:', 'https:');
+        // Build SockJS URL and include token as query parameter (legacy behavior)
+        // Note: this places the token in the URL (visible in network logs).
+        let sockUrl = this._getWebSocketUrl().replace('ws:', 'http:').replace('wss:', 'https:');
+        if (token) {
+          sockUrl = sockUrl + `?token=${encodeURIComponent(token)}`;
+        }
 
         const socket = new SockJS(sockUrl);
         this.stompClient = Stomp.over(socket);
@@ -97,9 +100,6 @@ class WebSocketService {
         const headers = {
           roomId: String(roomId),
         };
-        if (token) {
-          headers.Authorization = `Bearer ${token}`;
-        }
 
         this.stompClient.connect(
           headers,
